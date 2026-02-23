@@ -6,7 +6,6 @@ import cors          from 'cors';
 import helmet        from 'helmet';
 import morgan        from 'morgan';
 import rateLimit     from 'express-rate-limit';
-import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import 'dotenv/config';
@@ -75,16 +74,7 @@ app.use('/api/whatsapp',  whatsappRoutes);
 app.use('/api/admin',     adminRoutes);
 app.use('/api/analytics', analyticsRoutes);
 
-// ── Serve frontend build in production
-if (process.env.NODE_ENV === 'production') {
-  const frontendDist = join(__dirname, '../frontend/dist');
-  app.use(express.static(frontendDist));
-  app.get('*', (req, res) => {
-    if (!req.path.startsWith('/api')) {
-      res.sendFile(join(frontendDist, 'index.html'));
-    }
-  });
-}
+// ── Frontend is served by Vercel — no static files here
 
 // ── Health check
 app.get('/api/health', (req, res) => {
