@@ -62,7 +62,7 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 // ── Database init
-initDb();
+initDb().catch(e => { console.error("DB init failed:", e); process.exit(1); });
 
 // ── API Routes
 app.use('/api/auth',      authRoutes);

@@ -1,45 +1,71 @@
 // ═══════════════════════════════════════════════════════════
-// FuelOS — SQLite database layer (better-sqlite3)
+// FuelOS — Database layer using @libsql/client
+// Pure JS SQLite — no native compilation, works on Node 25+
 // ═══════════════════════════════════════════════════════════
-import Database       from 'better-sqlite3';
+import { createClient } from '@libsql/client';
 import { readFileSync, existsSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
-import { fileURLToPath }  from 'url';
+import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DB_FILE   = process.env.DB_PATH || join(__dirname, 'fuelos.db');
 
-let _db = null;
+// DB_PATH: file on Render disk (/var/data/fuelos.db) or local
+const DB_FILE = process.env.DB_PATH || join(__dirname, 'fuelos.db');
 
-export function getDb() {
-  if (!_db) {
-    // Ensure directory exists (for Render Disk mounts at /var/data)
-    const dir = join(DB_FILE, '..');
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+// Ensure directory exists
+const dir = join(DB_FILE, '..');
+if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
-    _db = new Database(DB_FILE);
-    _db.pragma('journal_mode = WAL');
-    _db.pragma('foreign_keys = ON');
-  }
-  return _db;
-}
+const client = createClient({ url: `file:${DB_FILE}` });
 
-export function initDb() {
-  const db  = getDb();
+export async function initDb() {
   const schemaPath = join(__dirname, '../database/schema.sql');
   if (existsSync(schemaPath)) {
     const sql = readFileSync(schemaPath, 'utf8');
-    db.exec(sql);
+    // Split on semicolons and run each statement
+    const stmts = sql.split(';').map(s => s.trim()).filter(Boolean);
+    for (const stmt of stmts) {
+      await client.execute(stmt).catch(() => {}); // ignore "already exists"
+    }
   }
   console.log('✓ Database ready:', DB_FILE);
-  return db;
+  return client;
 }
 
-// ── Helpers — params as spread array (better-sqlite3 style)
+// ── Synchronous-style helpers (await internally)
 export const db = {
-  get:  (sql, params = []) => getDb().prepare(sql).get(...params),
-  all:  (sql, params = []) => getDb().prepare(sql).all(...params),
-  run:  (sql, params = []) => getDb().prepare(sql).run(...params),
-  tx:   (fn)               => getDb().transaction(fn)(),
-  exec: (sql)              => getDb().exec(sql),
+  get: async (sql, params = []) => {
+    const r = await client.execute({ sql, args: params });
+    return r.rows[0] ? rowToObj(r.rows[0], r.columns) : null;
+  },
+  all: async (sql, params = []) => {
+    const r = await client.execute({ sql, args: params });
+    return r.rows.map(row => rowToObj(row, r.columns));
+  },
+  run: async (sql, params = []) => {
+    const r = await client.execute({ sql, args: params });
+    return { changes: r.rowsAffected, lastInsertRowid: r.lastInsertRowid };
+  },
+  tx: async (fn) => {
+    await client.execute('BEGIN');
+    try {
+      await fn();
+      await client.execute('COMMIT');
+    } catch (e) {
+      await client.execute('ROLLBACK');
+      throw e;
+    }
+  },
+  exec: async (sql) => {
+    const stmts = sql.split(';').map(s => s.trim()).filter(Boolean);
+    for (const stmt of stmts) await client.execute(stmt);
+  },
 };
+
+function rowToObj(row, columns) {
+  const obj = {};
+  columns.forEach((col, i) => { obj[col] = row[i]; });
+  return obj;
+}
+
+export function getDb() { return client; }
