@@ -10,15 +10,15 @@ import { fileURLToPath } from 'url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // DB_PATH: file on Render disk (/var/data/fuelos.db) or local
-const DB_FILE = process.env.DB_PATH || join(__dirname, 'fuelos.db');
-
-// Ensure directory exists
-const dir = join(DB_FILE, '..');
-if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+// Use /tmp on Render free tier (no disk addon needed)
+// or DB_PATH if a Render Disk is attached
+const DB_FILE = process.env.DB_PATH || join('/tmp', 'fuelos.db');
 
 const client = createClient({ url: `file:${DB_FILE}` });
+console.log('[DB] Using:', DB_FILE);
 
 export async function initDb() {
+  // Note: /tmp is writable on all platforms without mkdir
   const schemaPath = join(__dirname, '../database/schema.sql');
   if (existsSync(schemaPath)) {
     const sql = readFileSync(schemaPath, 'utf8');
