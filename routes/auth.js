@@ -112,12 +112,28 @@ router.post('/login', async (req, res) => {
 
     if (!user) return res.status(401).json({ error: 'No account found with that email for role: ' + role });
 
-    const hashOk  = user.password_hash === password;
-    const bcryptOk = user.password_hash?.startsWith('$2b') && bcrypt.compareSync(password, user.password_hash);
-    console.log(`[Login] hashOk=${hashOk} bcryptOk=${bcryptOk}`);
+    const isHashed = user.password_hash?.startsWith('$2b') || user.password_hash?.startsWith('$2a');
+    let match = false;
+    if (isHashed) {
+      match = bcrypt.compareSync(password, user.password_hash);
+    } else {
+      // Plain text password (legacy seed data)
+      match = user.password_hash === password;
+    }
 
-    const match = hashOk || bcryptOk;
-    if (!match) return res.status(401).json({ error: 'Password incorrect for ' + role });
+    console.log(`[Login] role=${role} email=${email} isHashed=${isHashed} match=${match}`);
+    if (!match) {
+      // If plain text in DB, auto-upgrade to bcrypt on next successful login attempt
+      return res.status(401).json({ error: 'Password incorrect' });
+    }
+
+    // Auto-upgrade plain text passwords to bcrypt on successful login
+    if (!isHashed) {
+      const upgraded = bcrypt.hashSync(password, 10);
+      const tbl = role === 'owner' ? 'owners' : role === 'manager' ? 'managers' : 'operators';
+      await db.run(`UPDATE ${tbl} SET password_hash=? WHERE id=?`, [upgraded, user.id]).catch(()=>{});
+      console.log(`[Login] Auto-upgraded password hash for ${email}`);
+    }
 
     const table = role === 'owner' ? 'owners' : role === 'manager' ? 'managers' : 'operators';
     await db.run(`UPDATE ${table} SET last_login=datetime('now') WHERE id=?`, [user.id]).catch(()=>{});
@@ -358,19 +374,38 @@ export default router;
 // Remove after debugging
 // ─────────────────────────────────────────────────────────
 router.get('/debug-login/:email', async (req, res) => {
-  if (process.env.NODE_ENV === 'production' && process.env.ALLOW_DEBUG !== 'true')
-    return res.status(403).json({ error: 'Set ALLOW_DEBUG=true to enable' });
+  if (process.env.ALLOW_DEBUG !== 'true')
+    return res.status(403).json({ error: 'Set ALLOW_DEBUG=true env var to enable' });
   try {
-    const email = req.params.email;
+    const { email } = req.params;
+    const { password } = req.query; // optional: pass ?password=xxx to test match
     const owner = await db.get('SELECT id,name,email,status,password_hash FROM owners WHERE email=?', [email]);
-    const mgr   = await db.get('SELECT id,name,email,status,password_hash FROM managers WHERE email=?', [email]);
-    const op    = await db.get('SELECT id,name,email,status,password_hash FROM operators WHERE email=?', [email]);
     const co    = await db.get('SELECT id,name,email,role,status,password_hash FROM company_users WHERE email=?', [email]);
+
+    const fmt = (row) => {
+      if (!row) return null;
+      const isHashed = row.password_hash?.startsWith('$2b') || row.password_hash?.startsWith('$2a');
+      const result = {
+        id: row.id, name: row.name, email: row.email,
+        status: row.status, role: row.role,
+        hash_type: isHashed ? 'bcrypt' : 'plain_text',
+        hash_prefix: row.password_hash?.slice(0, 15) + '...',
+        hash_length: row.password_hash?.length,
+      };
+      if (password) {
+        result.password_test = isHashed
+          ? bcrypt.compareSync(password, row.password_hash)
+          : row.password_hash === password;
+      }
+      return result;
+    };
+
+    const allOwners = await db.all('SELECT id,name,email,status FROM owners');
     res.json({
-      owner: owner ? { ...owner, hash_type: owner.password_hash?.startsWith('$2b') ? 'bcrypt' : 'plain', hash_prefix: owner.password_hash?.slice(0,10) } : null,
-      manager: mgr ? { ...mgr, hash_type: mgr.password_hash?.startsWith('$2b') ? 'bcrypt' : 'plain' } : null,
-      operator: op  ? { ...op,  hash_type: op.password_hash?.startsWith('$2b')  ? 'bcrypt' : 'plain' } : null,
-      company:  co  ? { ...co,  hash_type: co.password_hash?.startsWith('$2b')  ? 'bcrypt' : 'plain' } : null,
+      searched_email: email,
+      owner: fmt(owner),
+      company_user: fmt(co),
+      all_owners_in_db: allOwners.map(o => ({ id: o.id, name: o.name, email: o.email, status: o.status })),
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
