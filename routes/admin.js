@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { v4 as uuid } from 'uuid';
+import bcrypt from 'bcryptjs';
 import { db } from '../db.js';
 import { authMiddleware, requireRole } from '../middleware/auth.js';
 
@@ -139,10 +140,13 @@ router.post('/owners', async (req, res) => {
   try {
     const { name, email, phone, password, city, state, plan, gst } = req.body;
     if (!name || !email || !password) return res.status(400).json({ error: 'Name, email and password are required' });
+    if (password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
+    if (!/[A-Z]/.test(password) && !/[0-9]/.test(password))
+      return res.status(400).json({ error: 'Password is too weak — add uppercase letters or numbers' });
     const existing = await db.get('SELECT id FROM owners WHERE email=?', [email]);
     if (existing) return res.status(409).json({ error: 'Email already registered' });
     const id = 'O' + Date.now();
-    const hash = (await import('bcryptjs')).default.hashSync(password, 10);
+    const hash = bcrypt.hashSync(password, 10);
     const today = new Date().toISOString().split('T')[0];
     // Default 30-day trial on Starter plan
     const endDate = new Date(Date.now() + 30*24*60*60*1000).toISOString().split('T')[0];
@@ -153,7 +157,7 @@ router.post('/owners', async (req, res) => {
       [id, name, email, hash, phone||'', city||'', state||'', gst||'', chosenPlan, 'monthly', 'Active', today, endDate, 0]
     );
     await db.run(`INSERT INTO audit_log VALUES (?,?,?,?,?,datetime('now'))`,
-      [require('uuid').v4?.() || ('AL'+Date.now()), req.user?.email||'admin', 'Admin', `Created owner: ${email} (${chosenPlan})`, req.ip||'']);
+      [uuid(), req.user?.email||'admin', 'Admin', `Created owner: ${email} (${chosenPlan})`, req.ip||'']);
     res.json({ success: true, id, email, plan: chosenPlan, endDate });
   } catch (e) {
     if (e.message?.includes('UNIQUE')) return res.status(409).json({ error: 'Email already registered' });
