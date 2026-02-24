@@ -20,23 +20,26 @@ await db.run(`CREATE TABLE IF NOT EXISTS company_users (
 
 // ── Seed first SuperAdmin if none exists
 // SuperAdmin is the TOP role — seeded once from env, never created via UI
+// ── Fixed default SuperAdmin credentials (one-time seed)
+// Email: superadmin@superadmin.com  |  Password: super2025
+// Once you log in and update via My Account, the DB record is updated
+// and these defaults are no longer used — the DB value takes over.
+const SA_DEFAULT_EMAIL = 'superadmin@superadmin.com';
+const SA_DEFAULT_PASS  = 'super2025';
+
 const saExists = await db.get(`SELECT id FROM company_users WHERE role='superadmin' LIMIT 1`);
 if (!saExists) {
-  const email = process.env.SUPERADMIN_EMAIL    || 'superadmin@fuelos.in';
-  const pass  = process.env.SUPERADMIN_PASSWORD || 'super2025';
-  const hash  = bcrypt.hashSync(pass, 10);
+  const hash = bcrypt.hashSync(SA_DEFAULT_PASS, 10);
   await db.run(
-    `INSERT OR IGNORE INTO company_users (id,email,name,role,password_hash) VALUES (?,?,?,?,?)`,
-    [uuid(), email, 'Super Admin', 'superadmin', hash]
+    `INSERT INTO company_users (id,email,name,role,password_hash) VALUES (?,?,?,?,?)`,
+    [uuid(), SA_DEFAULT_EMAIL, 'Super Admin', 'superadmin', hash]
   );
-  console.log(`\n╔══════════════════════════════════════════════════╗`);
-  console.log(`║  FuelOS First-Time Setup                         ║`);
-  console.log(`║  SuperAdmin seeded:                              ║`);
-  console.log(`║  Email:    ${email.padEnd(38)}║`);
-  console.log(`║  Password: ${pass.padEnd(38)}║`);
-  console.log(`║  Set SUPERADMIN_EMAIL + SUPERADMIN_PASSWORD env  ║`);
-  console.log(`║  vars to change these before going live.         ║`);
-  console.log(`╚══════════════════════════════════════════════════╝\n`);
+  console.log('\n╔══════════════════════════════════════════════╗');
+  console.log('║  FuelOS — SuperAdmin Account Created          ║');
+  console.log('║  Email:    superadmin@superadmin.com          ║');
+  console.log('║  Password: super2025                          ║');
+  console.log('║  Login and change these from My Account tab   ║');
+  console.log('╚══════════════════════════════════════════════╝\n');
 }
 
 // ── In-memory OTP store  { email → { otp, role, expires } }
