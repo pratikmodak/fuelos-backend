@@ -58,4 +58,18 @@ router.post('/', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+router.get('/readings', async (req, res) => {
+  try {
+    const ownerId = req.user.ownerId || req.user.id;
+    const { pumpId, date, limit = 500 } = req.query;
+    let sql = 'SELECT * FROM nozzle_readings WHERE owner_id=?';
+    const params = [ownerId];
+    if (pumpId) { sql += ' AND pump_id=?'; params.push(pumpId); }
+    if (date)   { sql += ' AND date=?'; params.push(date); }
+    sql += ' ORDER BY date DESC, shift_index DESC LIMIT ?';
+    params.push(Number(limit));
+    res.json(await db.all(sql, params));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 export default router;
