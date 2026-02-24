@@ -162,6 +162,20 @@ router.post('/owners', async (req, res) => {
   }
 });
 
+// ── PATCH /api/admin/owners/:id/password — reset owner password
+router.patch('/owners/:id/password', async (req, res) => {
+  try {
+    const { password } = req.body;
+    if (!password || password.length < 8)
+      return res.status(400).json({ error: 'Password must be at least 8 characters' });
+    const hash = bcrypt.hashSync(password, 10);
+    await db.run(`UPDATE owners SET password_hash=? WHERE id=?`, [hash, req.params.id]);
+    await db.run(`INSERT INTO audit_log VALUES (?,?,?,?,?,datetime('now'))`,
+      [uuid(), req.user?.email||'admin', 'Admin', `Reset password for owner ${req.params.id}`, req.ip||'']);
+    res.json({ success: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── DELETE /api/admin/owners/:id — remove owner
 router.delete('/owners/:id', async (req, res) => {
   try {

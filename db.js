@@ -8,11 +8,30 @@ import { dirname, join } from 'path';
 import { existsSync, mkdirSync } from 'fs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DB_FILE = process.env.DB_PATH || '/tmp/fuelos.db';
+// ── Database connection
+// Priority: TURSO_URL (hosted, persistent) > DB_PATH (local file) > /tmp (ephemeral)
+//
+// FREE PERSISTENT DB: Sign up at turso.tech, create a DB, set these env vars on Render:
+//   TURSO_URL      = libsql://your-db-name.turso.io
+//   TURSO_TOKEN    = your-auth-token
+//
+// WITHOUT Turso: data is lost every time Render restarts (free tier = every ~15min idle)
 
-console.log('[DB] File:', DB_FILE);
+const TURSO_URL   = process.env.TURSO_URL;
+const TURSO_TOKEN = process.env.TURSO_TOKEN;
+const DB_FILE     = process.env.DB_PATH || '/tmp/fuelos.db';
 
-const client = createClient({ url: `file:${DB_FILE}` });
+let client;
+if (TURSO_URL) {
+  // Hosted Turso DB — data persists forever
+  client = createClient({ url: TURSO_URL, authToken: TURSO_TOKEN });
+  console.log('[DB] Using Turso hosted DB:', TURSO_URL.split('.')[0]);
+} else {
+  // Local file DB — /tmp is wiped on Render restart
+  client = createClient({ url: `file:${DB_FILE}` });
+  console.log('[DB] ⚠ Using local file DB (data lost on restart):', DB_FILE);
+  console.log('[DB] → Set TURSO_URL + TURSO_TOKEN env vars for persistent storage');
+}
 
 // ── Full schema embedded (no external file dependency)
 const SCHEMA = `
