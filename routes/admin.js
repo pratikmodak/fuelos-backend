@@ -179,8 +179,101 @@ router.patch('/owners/:id/password', async (req, res) => {
 // ── DELETE /api/admin/owners/:id — remove owner
 router.delete('/owners/:id', async (req, res) => {
   try {
-    await db.run('UPDATE owners SET status=? WHERE id=?', ['Deleted', req.params.id]);
+    const { id } = req.params;
+    const { hard } = req.query; // ?hard=true for permanent delete
+
+    if (hard === 'true') {
+      // Hard delete — remove owner and all their data
+      await db.tx(async () => {
+        await db.run('DELETE FROM nozzle_readings WHERE owner_id=?', [id]);
+        await db.run('DELETE FROM shift_reports    WHERE owner_id=?', [id]);
+        await db.run('DELETE FROM sales            WHERE owner_id=?', [id]);
+        await db.run('DELETE FROM nozzles          WHERE owner_id=?', [id]);
+        await db.run('DELETE FROM pumps            WHERE owner_id=?', [id]);
+        await db.run('DELETE FROM operators        WHERE owner_id=?', [id]);
+        await db.run('DELETE FROM managers         WHERE owner_id=?', [id]);
+        await db.run('DELETE FROM transactions     WHERE owner_id=?', [id]).catch(()=>{});
+        await db.run('DELETE FROM owners           WHERE id=?',       [id]);
+      });
+    } else {
+      // Soft delete — just mark as Deleted
+      await db.run('UPDATE owners SET status=? WHERE id=?', ['Deleted', id]);
+    }
     res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// PATCH operator — Owner admin can edit operator details
+router.patch('/operators/:id', async (req, res) => {
+  try {
+    const { name, email, phone, shift, nozzles, salary, status, pump_id } = req.body;
+    const nozzleStr = Array.isArray(nozzles) ? JSON.stringify(nozzles) : nozzles;
+    await db.run(
+      `UPDATE operators SET
+        name=COALESCE(?,name), email=COALESCE(?,email), phone=COALESCE(?,phone),
+        shift=COALESCE(?,shift), nozzles=COALESCE(?,nozzles), salary=COALESCE(?,salary),
+        status=COALESCE(?,status), pump_id=COALESCE(?,pump_id)
+       WHERE id=?`,
+      [name, email, phone, shift, nozzleStr, salary, status, pump_id, req.params.id]
+    );
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// PATCH shift report — Owner admin can correct submitted shift details
+router.patch('/shifts/:id', async (req, res) => {
+  try {
+    const { cash, card, upi, credit_out, manager, total_sales } = req.body;
+    await db.run(
+      `UPDATE shift_reports SET
+        cash=COALESCE(?,cash), card=COALESCE(?,card), upi=COALESCE(?,upi),
+        credit_out=COALESCE(?,credit_out), manager=COALESCE(?,manager),
+        total_sales=COALESCE(?,total_sales)
+       WHERE id=?`,
+      [cash, card, upi, credit_out, manager, total_sales, req.params.id]
+    );
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET full backup — SuperAdmin only
+router.get('/backup', async (req, res) => {
+  try {
+    const [owners, pumps, managers, operators, nozzles, shifts, readings, sales, transactions] =
+      await Promise.all([
+        db.all('SELECT * FROM owners'),
+        db.all('SELECT * FROM pumps'),
+        db.all('SELECT * FROM managers'),
+        db.all('SELECT * FROM operators'),
+        db.all('SELECT * FROM nozzles'),
+        db.all('SELECT * FROM shift_reports ORDER BY date DESC LIMIT 5000'),
+        db.all('SELECT * FROM nozzle_readings ORDER BY date DESC LIMIT 10000'),
+        db.all('SELECT * FROM sales ORDER BY date DESC LIMIT 2000'),
+        db.all('SELECT * FROM transactions ORDER BY created_at DESC LIMIT 1000').catch(()=>[]),
+      ]);
+
+    // Scrub sensitive fields
+    const scrub = rows => rows.map(r => {
+      const s = {...r};
+      delete s.password_hash;
+      return s;
+    });
+
+    const backup = {
+      meta: {
+        exported_at: new Date().toISOString(),
+        exported_by: req.user.email,
+        version: '1.0',
+        counts: { owners: owners.length, pumps: pumps.length, managers: managers.length,
+          operators: operators.length, shifts: shifts.length, readings: readings.length },
+      },
+      owners: scrub(owners), pumps, managers: scrub(managers), operators: scrub(operators),
+      nozzles, shift_reports: shifts, nozzle_readings: readings, sales, transactions,
+    };
+
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', `attachment; filename="fuelos-backup-${new Date().toISOString().slice(0,10)}.json"`);
+    res.json(backup);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

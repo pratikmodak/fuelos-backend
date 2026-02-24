@@ -321,6 +321,15 @@ export async function initDb() {
   }
   console.log(`✓ DB ready — ${created} tables initialized`);
 
+  // ── Column migrations (safe to run repeatedly)
+  const columnMigrations = [
+    "ALTER TABLE shift_reports ADD COLUMN confirmed_by TEXT",
+    "ALTER TABLE shift_reports ADD COLUMN confirmed_at TEXT",
+  ];
+  for (const m of columnMigrations) {
+    try { await client.execute(m); } catch(e) { /* column already exists — OK */ }
+  }
+
   // Seed demo data if owners table is empty
   const check = await client.execute('SELECT COUNT(*) as c FROM owners');
   const count = check.rows[0][0];

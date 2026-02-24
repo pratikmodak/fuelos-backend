@@ -142,7 +142,15 @@ router.post('/login', async (req, res) => {
       [uuid(), email, role.charAt(0).toUpperCase()+role.slice(1), 'Login', req.ip]
     ).catch(()=>{});
 
-    const token = signToken({ id: user.id, email: user.email, role, ownerId: user.owner_id || user.id });
+    // Determine correct ownerId for the token
+    let tokenOwnerId = user.owner_id || (role === 'owner' ? user.id : null);
+    // For manager/operator: if owner_id not set, look up from pump
+    if (!tokenOwnerId && (role === 'manager' || role === 'operator') && user.pump_id) {
+      const pump = await db.get('SELECT owner_id FROM pumps WHERE id=?', [user.pump_id]).catch(()=>null);
+      tokenOwnerId = pump?.owner_id;
+    }
+    if (!tokenOwnerId) tokenOwnerId = user.id; // last resort
+    const token = signToken({ id: user.id, email: user.email, role, ownerId: tokenOwnerId, pumpId: user.pump_id });
     const { password_hash, ...safe } = user;
     res.json({ token, user: { ...safe, role }, role });
   } catch (e) {
@@ -365,6 +373,21 @@ router.patch('/company-users/:id/password', authMiddleware, async (req, res) => 
   const hash = bcrypt.hashSync(password, 10);
   await db.run(`UPDATE company_users SET password_hash=? WHERE id=?`, [hash, req.params.id]);
   res.json({ success: true });
+});
+
+// Debug: show token contents + owner resolution
+router.get('/me', async (req, res) => {
+  try {
+    const u = req.user;
+    const ownerExists = u.ownerId ? await db.get('SELECT id,name,email FROM owners WHERE id=?', [u.ownerId]) : null;
+    const pumpExists  = u.pumpId  ? await db.get('SELECT id,name,owner_id FROM pumps  WHERE id=?', [u.pumpId])  : null;
+    res.json({
+      token_contents: { id: u.id, email: u.email, role: u.role, ownerId: u.ownerId, pumpId: u.pumpId },
+      owner_in_db: ownerExists,
+      pump_in_db:  pumpExists,
+      fk_will_work: !!ownerExists,
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 export default router;
