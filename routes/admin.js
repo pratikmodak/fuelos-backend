@@ -4,7 +4,7 @@ import { db } from '../db.js';
 import { authMiddleware, requireRole } from '../middleware/auth.js';
 
 const router = Router();
-router.use(authMiddleware, requireRole('admin'));
+router.use(authMiddleware, requireRole('admin', 'superadmin'));
 
 router.get('/config', async (req, res) => {
   try {

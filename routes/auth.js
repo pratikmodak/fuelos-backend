@@ -63,8 +63,36 @@ if (!saRow) {
   console.log(`[Auth] Migrated superadmin email to ${SA_DEFAULT_EMAIL}`);
 }
 
-// ── In-memory OTP store  { email → { otp, role, expires } }
-const otpStore = new Map();
+// ── DB-backed OTP store (survives server restarts/Render spin-down)
+await db.run(`CREATE TABLE IF NOT EXISTS otp_store (
+  email   TEXT NOT NULL,
+  role    TEXT NOT NULL,
+  otp     TEXT NOT NULL,
+  expires INTEGER NOT NULL,
+  PRIMARY KEY (email, role)
+)`).catch(()=>{});
+// Clean expired OTPs on startup
+await db.run(`DELETE FROM otp_store WHERE expires < ?`, [Date.now()]).catch(()=>{});
+
+const otpStore = {
+  async set(email, data) {
+    await db.run(
+      `INSERT OR REPLACE INTO otp_store (email, role, otp, expires) VALUES (?,?,?,?)`,
+      [email, data.role, data.otp, data.expires]
+    );
+  },
+  async find(role, otp) {
+    // Find matching non-expired entry
+    const row = await db.get(
+      `SELECT * FROM otp_store WHERE role=? AND otp=? AND expires > ?`,
+      [role, otp, Date.now()]
+    );
+    return row ? row.email : null;
+  },
+  async delete(email) {
+    await db.run(`DELETE FROM otp_store WHERE email=?`, [email]);
+  }
+};
 
 // ─────────────────────────────────────────────────────────
 // POST /api/auth/login  — Owner / Manager / Operator
@@ -131,7 +159,7 @@ router.post('/admin-login', async (req, res) => {
       return;
     }
 
-    otpStore.set(email, { otp, role, expires: Date.now() + 10 * 60 * 1000 });
+    await otpStore.set(email, { otp, role, expires: Date.now() + 30 * 60 * 1000 }); // 30min expiry
     console.log(`[OTP] ${role} / ${email} → ${otp}`);
 
     // Return OTP in response unless HIDE_OTP=true env var is set
@@ -190,16 +218,11 @@ router.post('/admin-verify', async (req, res) => {
         return res.status(400).json({ error: '2FA not enabled for this account' });
       }
     } else {
-      // Email OTP path
-      foundEmail = null;
-      for (const [email, entry] of otpStore.entries()) {
-        if (entry.role === role && entry.otp === otp && entry.expires > Date.now()) {
-          foundEmail = email; break;
-        }
-      }
+      // Email OTP path — look up from DB store
+      foundEmail = await otpStore.find(role, otp);
       if (!foundEmail)
-        return res.status(401).json({ error: 'Invalid or expired OTP' });
-      otpStore.delete(foundEmail);
+        return res.status(401).json({ error: 'Invalid or expired OTP. Request a new one.' });
+      await otpStore.delete(foundEmail);
 
       user = await db.get(
         `SELECT * FROM company_users WHERE email=? AND role=?`,

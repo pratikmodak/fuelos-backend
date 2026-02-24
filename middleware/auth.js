@@ -28,5 +28,5 @@ export function requireRole(...roles) {
 }
 
 export function signToken(payload) {
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: '24h' });
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
 }
