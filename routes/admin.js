@@ -133,8 +133,6 @@ router.get('/audit', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-export default router;
-
 // ── POST /api/admin/owners — create new owner account
 router.post('/owners', async (req, res) => {
   try {
@@ -148,7 +146,6 @@ router.post('/owners', async (req, res) => {
     const id = 'O' + Date.now();
     const hash = bcrypt.hashSync(password, 10);
     const today = new Date().toISOString().split('T')[0];
-    // Default 30-day trial on Starter plan
     const endDate = new Date(Date.now() + 30*24*60*60*1000).toISOString().split('T')[0];
     const chosenPlan = plan || 'Starter';
     await db.run(
@@ -172,3 +169,5 @@ router.delete('/owners/:id', async (req, res) => {
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
+
+export default router;

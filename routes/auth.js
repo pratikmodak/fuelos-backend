@@ -107,12 +107,17 @@ router.post('/login', async (req, res) => {
     if      (role === 'owner')    user = await db.get('SELECT * FROM owners    WHERE email=?', [email]);
     else if (role === 'manager')  user = await db.get('SELECT * FROM managers  WHERE email=?', [email]);
     else if (role === 'operator') user = await db.get('SELECT * FROM operators WHERE email=?', [email]);
-    if (!user) return res.status(401).json({ error: 'Invalid credentials' });
 
-    const match =
-      user.password_hash === password ||
-      (user.password_hash?.startsWith('$2b') && bcrypt.compareSync(password, user.password_hash));
-    if (!match) return res.status(401).json({ error: 'Invalid credentials' });
+    console.log(`[Login] role=${role} email=${email} found=${!!user} hash_prefix=${user?.password_hash?.slice(0,10)}`);
+
+    if (!user) return res.status(401).json({ error: 'No account found with that email for role: ' + role });
+
+    const hashOk  = user.password_hash === password;
+    const bcryptOk = user.password_hash?.startsWith('$2b') && bcrypt.compareSync(password, user.password_hash);
+    console.log(`[Login] hashOk=${hashOk} bcryptOk=${bcryptOk}`);
+
+    const match = hashOk || bcryptOk;
+    if (!match) return res.status(401).json({ error: 'Password incorrect for ' + role });
 
     const table = role === 'owner' ? 'owners' : role === 'manager' ? 'managers' : 'operators';
     await db.run(`UPDATE ${table} SET last_login=datetime('now') WHERE id=?`, [user.id]).catch(()=>{});
@@ -347,6 +352,28 @@ router.patch('/company-users/:id/password', authMiddleware, async (req, res) => 
 });
 
 export default router;
+
+// ─────────────────────────────────────────────────────────
+// GET /api/auth/debug-login  — TEMP: check what's in DB for an email
+// Remove after debugging
+// ─────────────────────────────────────────────────────────
+router.get('/debug-login/:email', async (req, res) => {
+  if (process.env.NODE_ENV === 'production' && process.env.ALLOW_DEBUG !== 'true')
+    return res.status(403).json({ error: 'Set ALLOW_DEBUG=true to enable' });
+  try {
+    const email = req.params.email;
+    const owner = await db.get('SELECT id,name,email,status,password_hash FROM owners WHERE email=?', [email]);
+    const mgr   = await db.get('SELECT id,name,email,status,password_hash FROM managers WHERE email=?', [email]);
+    const op    = await db.get('SELECT id,name,email,status,password_hash FROM operators WHERE email=?', [email]);
+    const co    = await db.get('SELECT id,name,email,role,status,password_hash FROM company_users WHERE email=?', [email]);
+    res.json({
+      owner: owner ? { ...owner, hash_type: owner.password_hash?.startsWith('$2b') ? 'bcrypt' : 'plain', hash_prefix: owner.password_hash?.slice(0,10) } : null,
+      manager: mgr ? { ...mgr, hash_type: mgr.password_hash?.startsWith('$2b') ? 'bcrypt' : 'plain' } : null,
+      operator: op  ? { ...op,  hash_type: op.password_hash?.startsWith('$2b')  ? 'bcrypt' : 'plain' } : null,
+      company:  co  ? { ...co,  hash_type: co.password_hash?.startsWith('$2b')  ? 'bcrypt' : 'plain' } : null,
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
 // ─────────────────────────────────────────────────────────
 // GET /api/auth/reset-superadmin  — EMERGENCY: reset SA to defaults
