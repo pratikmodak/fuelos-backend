@@ -20,6 +20,7 @@ import webhookRoutes      from './routes/webhooks.js';
 import whatsappRoutes     from './routes/whatsapp.js';
 import adminRoutes        from './routes/admin.js';
 import analyticsRoutes    from './routes/analytics.js';
+import superAdminRoutes   from './routes/superadmin.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app  = express();
@@ -54,6 +55,7 @@ app.use('/api/webhooks',  webhookRoutes);
 app.use('/api/whatsapp',  whatsappRoutes);
 app.use('/api/admin',     adminRoutes);
 app.use('/api/analytics', analyticsRoutes);
+app.use('/api/superadmin', superAdminRoutes);
 
 // ── Health check
 app.get('/api/health', (req, res) => {

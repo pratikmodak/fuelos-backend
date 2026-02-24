@@ -63,4 +63,32 @@ router.get('/me', authMiddleware, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+
+// Super admin / monitor / caller login (single password, no OTP for now)
+router.post('/superadmin-login', async (req, res) => {
+  const { role, password } = req.body;
+  const PASSWORDS = {
+    superadmin: process.env.SUPERADMIN_PASSWORD || 'super2025',
+    monitor:    process.env.MONITOR_PASSWORD    || 'monitor2025',
+    caller:     process.env.CALLER_PASSWORD     || 'caller2025',
+  };
+  const allowed = ['superadmin', 'monitor', 'caller'];
+  if (!allowed.includes(role)) return res.status(400).json({ error: 'Invalid role' });
+  if (password !== PASSWORDS[role]) return res.status(401).json({ error: 'Wrong password' });
+  const otp = Math.floor(100000 + Math.random() * 900000).toString();
+  console.log(`[${role.toUpperCase()} OTP] ${otp}`);
+  res.json({ success: true, message: 'OTP sent' });
+});
+
+router.post('/superadmin-verify', async (req, res) => {
+  const { role, otp } = req.body;
+  const allowed = ['superadmin', 'monitor', 'caller'];
+  if (!allowed.includes(role)) return res.status(400).json({ error: 'Invalid role' });
+  if (!otp || otp.length !== 6) return res.status(401).json({ error: 'Invalid OTP' });
+  const token = signToken({ id: role, email: `${role}@fuelos.in`, role });
+  await db.run(`INSERT INTO audit_log VALUES (?,?,?,?,?,datetime('now'))`,
+    [uuid(), `${role}@fuelos.in`, role, `${role} Login`, req.ip]);
+  res.json({ token, role });
+});
+
 export default router;
