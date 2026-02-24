@@ -104,9 +104,9 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ error: 'email, password and role required' });
 
     let user;
-    if (role === 'owner')    user = await db.get('SELECT * FROM owners    WHERE email=?', [email]);
-    if (role === 'manager')  user = await db.get('SELECT * FROM managers  WHERE email=?', [email]);
-    if (role === 'operator') user = await db.get('SELECT * FROM operators WHERE email=?', [email]);
+    if      (role === 'owner')    user = await db.get('SELECT * FROM owners    WHERE email=?', [email]);
+    else if (role === 'manager')  user = await db.get('SELECT * FROM managers  WHERE email=?', [email]);
+    else if (role === 'operator') user = await db.get('SELECT * FROM operators WHERE email=?', [email]);
     if (!user) return res.status(401).json({ error: 'Invalid credentials' });
 
     const match =
