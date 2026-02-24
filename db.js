@@ -279,76 +279,7 @@ INSERT OR IGNORE INTO coupons VALUES
   ('CPN1','FIRST50',50,'flat',12,100,'Active'),
   ('CPN2','SAVE10',10,'percent',34,200,'Active'),
   ('CPN3','ANNUAL15',15,'percent',8,50,'Active');
-
-CREATE TABLE IF NOT EXISTS indents (
-  id            TEXT PRIMARY KEY,
-  owner_id      TEXT NOT NULL REFERENCES owners(id) ON DELETE CASCADE,
-  pump_id       TEXT NOT NULL,
-  tank_id       TEXT,
-  fuel          TEXT NOT NULL,
-  qty           REAL NOT NULL,
-  supplier      TEXT DEFAULT 'Primary Supplier',
-  delivery_date TEXT,
-  notes         TEXT,
-  status        TEXT DEFAULT 'Ordered',
-  ordered_at    TEXT DEFAULT (date('now')),
-  delivered_at  TEXT
-);
-CREATE TABLE IF NOT EXISTS fuel_rates (
-  id             TEXT PRIMARY KEY,
-  owner_id       TEXT NOT NULL REFERENCES owners(id) ON DELETE CASCADE,
-  pump_id        TEXT,
-  fuel           TEXT NOT NULL,
-  rate           REAL NOT NULL,
-  effective_date TEXT,
-  updated_at     TEXT DEFAULT (datetime('now')),
-  UNIQUE(owner_id, pump_id, fuel)
-);
-CREATE TABLE IF NOT EXISTS fuel_rate_log (
-  id         TEXT PRIMARY KEY,
-  owner_id   TEXT NOT NULL,
-  fuel       TEXT NOT NULL,
-  old_rate   REAL,
-  new_rate   REAL NOT NULL,
-  pump_id    TEXT,
-  changed_by TEXT,
-  changed_at TEXT DEFAULT (datetime('now'))
-);
-CREATE TABLE IF NOT EXISTS shift_audit_log (
-  id         TEXT PRIMARY KEY,
-  shift_id   TEXT NOT NULL,
-  owner_id   TEXT NOT NULL,
-  pump_id    TEXT,
-  date       TEXT,
-  shift      TEXT,
-  reason     TEXT NOT NULL,
-  changes    TEXT,
-  edited_by  TEXT,
-  created_at TEXT DEFAULT (datetime('now'))
-);
-CREATE TABLE IF NOT EXISTS notifications (
-  id         TEXT PRIMARY KEY,
-  owner_id   TEXT NOT NULL REFERENCES owners(id) ON DELETE CASCADE,
-  type       TEXT DEFAULT 'info',
-  icon       TEXT DEFAULT '🔵',
-  title      TEXT NOT NULL,
-  body       TEXT,
-  read       INTEGER DEFAULT 0,
-  created_at TEXT DEFAULT (datetime('now'))
-);
-CREATE TABLE IF NOT EXISTS credit_transactions (
-  id             TEXT PRIMARY KEY,
-  customer_id    TEXT NOT NULL REFERENCES credit_customers(id) ON DELETE CASCADE,
-  owner_id       TEXT NOT NULL,
-  type           TEXT NOT NULL,
-  amount         REAL NOT NULL,
-  description    TEXT,
-  date           TEXT,
-  balance_after  REAL,
-  created_at     TEXT DEFAULT (datetime('now'))
-);
 `;
-
 
 export async function initDb() {
   // Run each CREATE TABLE statement individually
