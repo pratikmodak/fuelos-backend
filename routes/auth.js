@@ -15,6 +15,8 @@ router.post('/login', async (req, res) => {
     if (role === 'manager')  user = await db.get('SELECT * FROM managers  WHERE email=?', [email]);
     if (role === 'operator') user = await db.get('SELECT * FROM operators WHERE email=?', [email]);
     if (!user) return res.status(401).json({ error: 'Invalid credentials' });
+    // Debug: log user keys on first login attempt
+    console.log('[Login] User found:', user.email, 'keys:', Object.keys(user).join(','));
     const match = user.password_hash === password ||
       (user.password_hash?.startsWith('$2b') && bcrypt.compareSync(password, user.password_hash));
     if (!match) return res.status(401).json({ error: 'Invalid credentials' });
@@ -23,7 +25,10 @@ router.post('/login', async (req, res) => {
     const token = signToken({ id: user.id, email: user.email, role, ownerId: user.owner_id || user.id });
     const { password_hash, ...safe } = user;
     res.json({ token, user: safe, role });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) {
+    console.error('[Login Error]', e.message, e.stack?.split('\n')[1]);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 router.post('/admin-login', async (req, res) => {
