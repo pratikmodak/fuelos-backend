@@ -8,15 +8,24 @@ const router = Router();
 
 // ── Ensure company_users table exists on startup
 await db.run(`CREATE TABLE IF NOT EXISTS company_users (
-  id          TEXT PRIMARY KEY,
-  email       TEXT UNIQUE NOT NULL,
-  name        TEXT,
-  role        TEXT NOT NULL,
+  id            TEXT PRIMARY KEY,
+  email         TEXT UNIQUE NOT NULL,
+  name          TEXT,
+  role          TEXT NOT NULL,
   password_hash TEXT NOT NULL,
-  status      TEXT DEFAULT 'Active',
-  created_at  TEXT DEFAULT (datetime('now')),
-  last_login  TEXT
+  status        TEXT DEFAULT 'Active',
+  created_at    TEXT DEFAULT (datetime('now')),
+  last_login    TEXT,
+  totp_secret   TEXT,
+  totp_pending  TEXT,
+  totp_enabled  INTEGER DEFAULT 0,
+  totp_backup_codes TEXT,
+  _customised   INTEGER DEFAULT 0
 )`);
+// Add missing columns to existing tables (safe on re-deploy)
+for (const col of ['totp_secret','totp_pending','totp_enabled','totp_backup_codes','_customised']) {
+  await db.run(`ALTER TABLE company_users ADD COLUMN ${col} ${col==='totp_enabled'||col==='_customised'?'INTEGER DEFAULT 0':'TEXT'}`).catch(()=>{});
+}
 
 // ── Seed first SuperAdmin if none exists
 // SuperAdmin is the TOP role — seeded once from env, never created via UI
@@ -27,8 +36,11 @@ await db.run(`CREATE TABLE IF NOT EXISTS company_users (
 const SA_DEFAULT_EMAIL = 'superadmin@superadmin.com';
 const SA_DEFAULT_PASS  = 'super2025';
 
-const saExists = await db.get(`SELECT id FROM company_users WHERE role='superadmin' LIMIT 1`);
-if (!saExists) {
+// Always ensure superadmin exists with correct default credentials
+// If a superadmin row exists with OLD email from previous deploy → update it
+const saRow = await db.get(`SELECT * FROM company_users WHERE role='superadmin' LIMIT 1`);
+if (!saRow) {
+  // Fresh DB — insert default superadmin
   const hash = bcrypt.hashSync(SA_DEFAULT_PASS, 10);
   await db.run(
     `INSERT INTO company_users (id,email,name,role,password_hash) VALUES (?,?,?,?,?)`,
@@ -40,6 +52,15 @@ if (!saExists) {
   console.log('║  Password: super2025                          ║');
   console.log('║  Login and change these from My Account tab   ║');
   console.log('╚══════════════════════════════════════════════╝\n');
+} else if (saRow.email !== SA_DEFAULT_EMAIL && !saRow._customised) {
+  // Old deploy had different default email — migrate to new default
+  // Only do this if the user hasn't customised their credentials yet
+  const hash = bcrypt.hashSync(SA_DEFAULT_PASS, 10);
+  await db.run(
+    `UPDATE company_users SET email=?, password_hash=?, name='Super Admin' WHERE id=?`,
+    [SA_DEFAULT_EMAIL, hash, saRow.id]
+  );
+  console.log(`[Auth] Migrated superadmin email to ${SA_DEFAULT_EMAIL}`);
 }
 
 // ── In-memory OTP store  { email → { otp, role, expires } }
@@ -305,6 +326,30 @@ router.patch('/company-users/:id/password', authMiddleware, async (req, res) => 
 export default router;
 
 // ─────────────────────────────────────────────────────────
+// GET /api/auth/reset-superadmin  — EMERGENCY: reset SA to defaults
+// Only works if ALLOW_SA_RESET=true env var is set
+// ─────────────────────────────────────────────────────────
+router.get('/reset-superadmin', async (req, res) => {
+  if (process.env.ALLOW_SA_RESET !== 'true')
+    return res.status(403).json({ error: 'Set ALLOW_SA_RESET=true env var to enable this' });
+  const hash = bcrypt.hashSync(SA_DEFAULT_PASS, 10);
+  const saRow = await db.get(`SELECT id FROM company_users WHERE role='superadmin' LIMIT 1`);
+  if (saRow) {
+    await db.run(
+      `UPDATE company_users SET email=?, password_hash=?, name='Super Admin', _customised=0 WHERE id=?`,
+      [SA_DEFAULT_EMAIL, hash, saRow.id]
+    );
+  } else {
+    await db.run(
+      `INSERT INTO company_users (id,email,name,role,password_hash) VALUES (?,?,?,?,?)`,
+      [uuid(), SA_DEFAULT_EMAIL, 'Super Admin', 'superadmin', hash]
+    );
+  }
+  console.log('[Auth] SuperAdmin reset to defaults');
+  res.json({ success: true, email: SA_DEFAULT_EMAIL, password: SA_DEFAULT_PASS });
+});
+
+// ─────────────────────────────────────────────────────────
 // PATCH /api/auth/profile  — update own name/email
 // ─────────────────────────────────────────────────────────
 router.patch('/profile', authMiddleware, async (req, res) => {
@@ -325,6 +370,8 @@ router.patch('/profile', authMiddleware, async (req, res) => {
     if (email) { updates.push('email=?'); params.push(email); }
     if (!updates.length) return res.status(400).json({ error: 'Nothing to update' });
     params.push(id);
+    updates.push('_customised=?');
+    params.splice(params.length-1, 0, 1); // insert 1 before the id (last) param
     await db.run(`UPDATE company_users SET ${updates.join(',')} WHERE id=?`, params);
     const updated = await db.get(`SELECT id,email,name,role,status FROM company_users WHERE id=?`, [id]);
     await db.run(`INSERT INTO audit_log VALUES (?,?,?,?,?,datetime('now'))`,
