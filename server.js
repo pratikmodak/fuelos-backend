@@ -12,6 +12,7 @@ import 'dotenv/config';
 
 import { initDb }         from './db.js';
 import authRoutes         from './routes/auth.js';
+import fuelPricesRoutes   from './routes/fuel-prices.js';
 import ownersRoutes       from './routes/owners.js';
 import pumpsRoutes        from './routes/pumps.js';
 import shiftsRoutes       from './routes/shifts.js';
@@ -56,6 +57,7 @@ app.use('/api/whatsapp',  whatsappRoutes);
 app.use('/api/admin',     adminRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/superadmin', superAdminRoutes);
+app.use('/api/fuel-prices', fuelPricesRoutes);
 
 // ── Health check
 app.get('/api/health', (req, res) => {

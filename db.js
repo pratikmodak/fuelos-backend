@@ -330,6 +330,21 @@ export async function initDb() {
     try { await client.execute(m); } catch(e) { /* column already exists — OK */ }
   }
 
+  // ── Ensure fuel_prices table exists (new feature)
+  try {
+    await client.execute(`CREATE TABLE IF NOT EXISTS fuel_prices (
+      id         TEXT PRIMARY KEY,
+      owner_id   TEXT NOT NULL,
+      pump_id    TEXT NOT NULL,
+      fuel       TEXT NOT NULL,
+      rate       REAL NOT NULL,
+      effective_date TEXT NOT NULL,
+      set_by     TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(pump_id, fuel, effective_date)
+    )`);
+  } catch(e) { console.warn('[DB] fuel_prices table:', e.message?.slice(0,60)); }
+
   // Seed demo data if owners table is empty
   const check = await client.execute('SELECT COUNT(*) as c FROM owners');
   const count = check.rows[0][0];
