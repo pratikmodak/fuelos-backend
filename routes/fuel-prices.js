@@ -5,7 +5,7 @@
 import { Router } from 'express';
 import * as db from '../db.js';
 import { requireAuth } from '../middleware/auth.js';
-import { nanoid } from 'nanoid';
+import { v4 as uuid } from 'uuid';
 
 const router = Router();
 router.use(requireAuth);
@@ -91,7 +91,7 @@ router.post('/', async (req, res) => {
 
     for (const [fuel, rate] of Object.entries(rates)) {
       if (!rate || isNaN(rate)) continue;
-      const id = `FP${nanoid(8)}`;
+      const id = `FP${uuid().replace(/-/g,'').slice(0,8)}`;
       await db.run(`
         INSERT INTO fuel_prices (id, owner_id, pump_id, fuel, rate, effective_date, set_by)
         VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -120,7 +120,7 @@ router.post('/all-pumps', async (req, res) => {
     for (const pump of pumps) {
       for (const [fuel, rate] of Object.entries(rates)) {
         if (!rate || isNaN(rate)) continue;
-        const id = `FP${nanoid(8)}`;
+        const id = `FP${uuid().replace(/-/g,'').slice(0,8)}`;
         await db.run(`
           INSERT INTO fuel_prices (id, owner_id, pump_id, fuel, rate, effective_date, set_by)
           VALUES (?, ?, ?, ?, ?, ?, ?)
