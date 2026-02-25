@@ -3,12 +3,12 @@
 // Owner sets daily rates per pump per fuel type
 // ═══════════════════════════════════════════════════════════
 import { Router } from 'express';
-import * as db from '../db.js';
-import { requireAuth } from '../middleware/auth.js';
+import { db } from '../db.js';
+import { authMiddleware } from '../middleware/auth.js';
 import { v4 as uuid } from 'uuid';
 
 const router = Router();
-router.use(requireAuth);
+router.use(authMiddleware);
 
 const today = () => new Date().toISOString().slice(0, 10);
 
