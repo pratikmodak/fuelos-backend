@@ -1,92 +1,116 @@
 // ═══════════════════════════════════════════════════════════
-// FuelOS v6 — Express Backend Server
+// FuelOS v3 — Backend Server
+// Node.js / Express — Deploy on Render
 // ═══════════════════════════════════════════════════════════
-import express       from 'express';
-import cors          from 'cors';
-import helmet        from 'helmet';
-import morgan        from 'morgan';
-import rateLimit     from 'express-rate-limit';
-import { fileURLToPath } from 'url';
-import { dirname }   from 'path';
-import 'dotenv/config';
+require('dotenv').config();
 
-import { initDb }         from './db.js';
-import authRoutes         from './routes/auth.js';
-import fuelPricesRoutes   from './routes/fuel-prices.js';
-import ownersRoutes       from './routes/owners.js';
-import pumpsRoutes        from './routes/pumps.js';
-import shiftsRoutes       from './routes/shifts.js';
-import paymentsRoutes     from './routes/payments.js';
-import webhookRoutes      from './routes/webhooks.js';
-import whatsappRoutes     from './routes/whatsapp.js';
-import adminRoutes        from './routes/admin.js';
-import analyticsRoutes    from './routes/analytics.js';
-import superAdminRoutes   from './routes/superadmin.js';
+const express = require('express');
+const cors    = require('cors');
+const db      = require('./db');
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const app  = express();
-const PORT = process.env.PORT || 4000;
+const app = express();
 
-// ── Middleware
-app.use(helmet({ contentSecurityPolicy: false }));
+// ── CORS — allow your Vercel frontend + localhost
+const allowedOrigins = [
+  process.env.FRONTEND_URL,
+  'http://localhost:5173',
+  'http://localhost:3000',
+  'https://fuelos.vercel.app',
+].filter(Boolean);
+
 app.use(cors({
-  origin: (origin, callback) => {
-    const allowed = [process.env.FRONTEND_URL, 'http://localhost:3000', 'http://localhost:5173'].filter(Boolean);
-    if (!origin || allowed.includes(origin) || origin.includes('vercel.app') || origin.includes('onrender.com')) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
+  origin: (origin, cb) => {
+    // Allow requests with no origin (mobile apps, curl, Postman)
+    if (!origin) return cb(null, true);
+    if (allowedOrigins.some(o => origin.startsWith(o))) return cb(null, true);
+    // In dev, allow all
+    if (process.env.NODE_ENV !== 'production') return cb(null, true);
+    cb(new Error('CORS: origin not allowed: ' + origin));
   },
   credentials: true,
 }));
-app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 200 }));
-app.use(morgan('dev'));
-app.use('/api/webhooks/razorpay', express.raw({ type: 'application/json' }));
-app.use(express.json({ limit: '10mb' }));
+
+app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-// ── Routes
-app.use('/api/auth',      authRoutes);
-app.use('/api/owners',    ownersRoutes);
-app.use('/api/pumps',     pumpsRoutes);
-app.use('/api/shifts',    shiftsRoutes);
-app.use('/api/payments',  paymentsRoutes);
-app.use('/api/webhooks',  webhookRoutes);
-app.use('/api/whatsapp',  whatsappRoutes);
-app.use('/api/admin',     adminRoutes);
-app.use('/api/analytics', analyticsRoutes);
-app.use('/api/superadmin', superAdminRoutes);
-app.use('/api/fuel-prices', fuelPricesRoutes);
-
-// ── Health check
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', version: '6.0.0', timestamp: new Date().toISOString() });
+// ── Request logging (brief)
+app.use((req, res, next) => {
+  if (req.path !== '/api/health') {
+    console.log(`[${new Date().toISOString().slice(11,19)}] ${req.method} ${req.path}`);
+  }
+  next();
 });
 
-// ── Error handler
-app.use((err, req, res, next) => {
-  console.error('Error:', err.message);
-  res.status(err.status || 500).json({ error: err.message });
-});
-
-// ══════════════════════════════════════════════════════════
-// START — await DB init BEFORE accepting any requests
-// ══════════════════════════════════════════════════════════
-async function start() {
+// ════════════════════════════════════════════════
+// HEALTH CHECK (no auth — used by Render + frontend wake-up)
+// ════════════════════════════════════════════════
+app.get('/api/health', async (req, res) => {
   try {
-    console.log('⏳ Initializing database...');
-    await initDb();                          // ← tables created, demo data seeded
-    console.log('✓ Database ready');
-
-    app.listen(PORT, () => {
-      console.log(`\n⛽  FuelOS Backend → http://localhost:${PORT}`);
-      console.log(`    DB: ${process.env.DB_PATH || '/tmp/fuelos.db'}\n`);
+    const start = Date.now();
+    await db.query('SELECT 1');
+    res.json({
+      status:  'ok',
+      db:      true,
+      latency: Date.now() - start,
+      version: '3.0.0',
+      uptime:  Math.round(process.uptime()),
     });
   } catch (e) {
-    console.error('❌ Startup failed:', e);
-    process.exit(1);
+    res.status(503).json({ status: 'error', db: false, error: e.message });
   }
+});
+
+// ════════════════════════════════════════════════
+// ROUTES
+// ════════════════════════════════════════════════
+app.use('/api/auth',         require('./routes/auth'));
+app.use('/api/owners',       require('./routes/owners'));
+app.use('/api/pumps',        require('./routes/pumps'));
+app.use('/api/shifts',       require('./routes/shifts'));
+app.use('/api/fuel-prices',  require('./routes/fuel-prices'));
+app.use('/api/analytics',    require('./routes/analytics'));
+app.use('/api/payments',     require('./routes/payments'));
+app.use('/api/admin',        require('./routes/admin'));
+app.use('/api/superadmin',   require('./routes/superadmin'));
+// WhatsApp log alias (admin route)
+app.get('/api/whatsapp/log', require('./middleware/auth').requireAdmin, (req, res) => res.json([]));
+
+// ════════════════════════════════════════════════
+// ERROR HANDLER
+// ════════════════════════════════════════════════
+app.use((err, req, res, next) => {
+  console.error('[ERROR]', err.message);
+  res.status(err.status || 500).json({ error: err.message || 'Internal server error' });
+});
+
+// 404
+app.use((req, res) => {
+  res.status(404).json({ error: `Route not found: ${req.method} ${req.path}` });
+});
+
+// ════════════════════════════════════════════════
+// START
+// ════════════════════════════════════════════════
+const PORT = process.env.PORT || 3000;
+
+async function start() {
+  // Test DB connection
+  try {
+    await db.query('SELECT 1');
+    console.log('[FuelOS] ✓ Database connected');
+  } catch (e) {
+    console.error('[FuelOS] ✗ Database connection failed:', e.message);
+    console.error('[FuelOS] Set DATABASE_URL in environment variables');
+    // Don't exit — let Render restart it
+  }
+
+  app.listen(PORT, () => {
+    console.log(`[FuelOS] ✓ Server running on port ${PORT}`);
+    console.log(`[FuelOS] ✓ Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`[FuelOS] ✓ Frontend allowed: ${allowedOrigins.join(', ')}`);
+    console.log(`[FuelOS] ✓ Razorpay: ${process.env.RAZORPAY_KEY_ID ? 'enabled' : 'demo mode'}`);
+    console.log(`[FuelOS] ✓ Email OTP: ${process.env.EMAIL_USER ? 'enabled' : 'log-only mode'}`);
+  });
 }
 
 start();

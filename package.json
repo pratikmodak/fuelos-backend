@@ -1,37 +1,30 @@
 {
   "name": "fuelos-backend",
-  "version": "6.0.0",
-  "description": "FuelOS backend API \u2014 Razorpay, WhatsApp, SQLite",
-  "type": "module",
+  "version": "3.0.0",
+  "description": "FuelOS v3 — Node/Express Backend for Render",
   "main": "server.js",
   "scripts": {
-    "dev": "nodemon server.js",
     "start": "node server.js",
-    "setup": "node scripts/setup-db.js",
-    "build": "node -e \"console.log('Build OK')\""
+    "dev": "nodemon server.js"
   },
   "dependencies": {
     "express": "^4.18.2",
+    "cors": "^2.8.5",
     "bcryptjs": "^2.4.3",
     "jsonwebtoken": "^9.0.2",
+    "dotenv": "^16.3.1",
+    "pg": "^8.11.3",
+    "node-cron": "^3.0.3",
+    "nodemailer": "^6.9.7",
+    "speakeasy": "^2.0.0",
+    "qrcode": "^1.5.3",
     "razorpay": "^2.9.2",
-    "twilio": "^4.23.0",
-    "axios": "^1.6.7",
-    "cors": "^2.8.5",
-    "dotenv": "^16.4.1",
-    "helmet": "^7.1.0",
-    "express-rate-limit": "^7.2.0",
-    "morgan": "^1.10.0",
-    "crypto": "^1.0.1",
-    "uuid": "^9.0.0",
-    "@libsql/client": "^0.14.0",
-    "otplib": "^12.0.1",
-    "qrcode": "^1.5.3"
+    "uuid": "^9.0.1"
   },
   "devDependencies": {
-    "nodemon": "^3.0.3"
+    "nodemon": "^3.0.2"
   },
   "engines": {
-    "node": ">=20.0.0 <25"
+    "node": ">=18.0.0"
   }
 }
