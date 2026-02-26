@@ -22,9 +22,14 @@ app.use(cors({
   origin: (origin, cb) => {
     // Allow requests with no origin (mobile apps, curl, Postman)
     if (!origin) return cb(null, true);
-    if (allowedOrigins.some(o => origin.startsWith(o))) return cb(null, true);
-    // In dev, allow all
-    if (process.env.NODE_ENV !== 'production') return cb(null, true);
+    // Allow all Vercel preview + production deployments
+    if (origin.endsWith('.vercel.app')) return cb(null, true);
+    // Allow localhost dev
+    if (origin.startsWith('http://localhost')) return cb(null, true);
+    // Allow explicitly listed origins
+    if (allowedOrigins.some(o => o && origin.startsWith(o))) return cb(null, true);
+    // Log and block unknown origins in production
+    console.error('[ERROR] CORS: origin not allowed:', origin);
     cb(new Error('CORS: origin not allowed: ' + origin));
   },
   credentials: true,
