@@ -52,6 +52,48 @@ router.get('/staff', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+
+// POST /api/owners/staff — unified create manager or operator
+router.post('/staff', requireOwner, async (req, res) => {
+  try {
+    const { role, name, email, phone, password, shift, pump_id, pumpId, nozzles, salary, status } = req.body;
+    const ownerId = req.user.owner_id || req.user.id;
+    const resolvedPumpId = pump_id || pumpId || null;
+
+    if (!role) return res.status(400).json({ error: 'role required (manager or operator)' });
+    if (!name || !email) return res.status(400).json({ error: 'name and email required' });
+
+    const hash = await bcrypt.hash(password || 'fuelos123', 10);
+
+    if (role === 'manager') {
+      const r = await db.query(
+        `INSERT INTO managers (owner_id,email,name,phone,password,shift,pump_id,salary,status)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+        [ownerId, email, name, phone||null, hash, shift||'Morning', resolvedPumpId, salary||0, status||'Active']
+      );
+      const m = r.rows[0];
+      return res.json({ ...m, id: String(m.id), ownerId: String(m.owner_id), pumpId: m.pump_id });
+    }
+
+    if (role === 'operator') {
+      const nozzleStr = Array.isArray(nozzles) ? nozzles.join(',') : (nozzles || '');
+      const r = await db.query(
+        `INSERT INTO operators (owner_id,email,name,phone,password,shift,pump_id,nozzles,salary,status)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+        [ownerId, email, name, phone||null, hash, shift||'Morning', resolvedPumpId, nozzleStr, salary||0, status||'Active']
+      );
+      const o = r.rows[0];
+      return res.json({ ...o, id: String(o.id), ownerId: String(o.owner_id), pumpId: o.pump_id });
+    }
+
+    res.status(400).json({ error: 'Invalid role. Use manager or operator' });
+  } catch (e) {
+    if (e.code === '23505') return res.status(409).json({ error: 'Email already exists' });
+    console.error('[owners/staff POST]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // POST /api/owners/managers
 router.post('/managers', requireOwner, async (req, res) => {
   try {
