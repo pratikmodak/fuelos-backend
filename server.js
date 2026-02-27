@@ -77,6 +77,7 @@ app.use('/api/analytics',    require('./routes/analytics'));
 app.use('/api/payments',     require('./routes/payments'));
 app.use('/api/admin',        require('./routes/admin'));
 app.use('/api/superadmin',   require('./routes/superadmin'));
+app.use('/api/ai',           require('./routes/ai'));
 // WhatsApp log alias (admin route)
 app.get('/api/whatsapp/log', require('./middleware/auth').requireAdmin, (req, res) => res.json([]));
 
