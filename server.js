@@ -16,13 +16,14 @@ const allowedOrigins = [
   'http://localhost:5173',
   'http://localhost:3000',
   'https://fuelos.vercel.app',
+  'https://fuelos-v.vercel.app',
 ].filter(Boolean);
 
 app.use(cors({
   origin: (origin, cb) => {
     // Allow requests with no origin (mobile apps, curl, Postman)
     if (!origin) return cb(null, true);
-    // Allow all Vercel preview + production deployments
+    // Allow ALL Vercel deployments (preview + production + any fuelos-* subdomain)
     if (origin.endsWith('.vercel.app')) return cb(null, true);
     // Allow localhost dev
     if (origin.startsWith('http://localhost')) return cb(null, true);
