@@ -65,13 +65,17 @@ router.get('/owners', requireAdmin, async (req, res) => {
 // POST /api/admin/owners — create owner
 router.post('/owners', requireAdmin, async (req, res) => {
   try {
-    const { name, email, phone, password, plan, billing, city, status } = req.body;
+    const { name, email, phone, password, plan, billing, city, cityCustom, state,
+            oil_company, pump_hours, gst, pan, business_name, status } = req.body;
     const hash = await bcrypt.hash(password || 'fuelos123', 10);
     const endDate = addMonths(today(), billing === 'yearly' ? 12 : 1);
+    const finalCity = city === 'Other' ? (cityCustom || city) : (city || '');
     const r = await db.query(
-      `INSERT INTO owners (email,name,phone,password,plan,billing,status,city,end_date)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
-      [email, name, phone, hash, plan||'Starter', billing||'monthly', status||'Active', city, endDate]
+      `INSERT INTO owners (email,name,phone,password,plan,billing,status,city,state,
+                           business_name,gst,pan,end_date)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
+      [email, name, phone, hash, plan||'Starter', billing||'monthly', status||'Active',
+       finalCity, state||'', business_name||'', gst||'', pan||'', endDate]
     );
     const o = r.rows[0];
     // Audit
