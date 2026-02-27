@@ -64,11 +64,16 @@ router.post('/', requireAuth, async (req, res) => {
     const ownerId = req.user.owner_id || req.user.id;
     const { pump_id, rates, effective_date } = req.body;
     const date = effective_date || new Date().toISOString().slice(0,10);
+    // Accept both capitalized (Petrol) and lowercase (petrol) keys from frontend
+    const petrol = rates.Petrol || rates.petrol || 0;
+    const diesel = rates.Diesel || rates.diesel || 0;
+    const cng    = rates.CNG    || rates.cng    || 0;
     await db.query(
       `INSERT INTO fuel_prices (owner_id,pump_id,petrol,diesel,cng,effective_date)
        VALUES ($1,$2,$3,$4,$5,$6)
-       ON CONFLICT DO NOTHING`,
-      [ownerId, pump_id, rates.petrol||0, rates.diesel||0, rates.cng||0, date]
+       ON CONFLICT (owner_id,pump_id,effective_date)
+       DO UPDATE SET petrol=$3, diesel=$4, cng=$5`,
+      [ownerId, pump_id, petrol, diesel, cng, date]
     );
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -82,10 +87,15 @@ router.post('/all-pumps', requireAuth, async (req, res) => {
     const date = effective_date || new Date().toISOString().slice(0,10);
     const pumps = await db.query('SELECT id FROM pumps WHERE owner_id=$1', [ownerId]);
     for (const p of pumps.rows) {
+      const petrol = rates.Petrol || rates.petrol || 0;
+      const diesel = rates.Diesel || rates.diesel || 0;
+      const cng    = rates.CNG    || rates.cng    || 0;
       await db.query(
         `INSERT INTO fuel_prices (owner_id,pump_id,petrol,diesel,cng,effective_date)
-         VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`,
-        [ownerId, p.id, rates.petrol||0, rates.diesel||0, rates.cng||0, date]
+         VALUES ($1,$2,$3,$4,$5,$6)
+         ON CONFLICT (owner_id,pump_id,effective_date)
+         DO UPDATE SET petrol=$3, diesel=$4, cng=$5`,
+        [ownerId, p.id, petrol, diesel, cng, date]
       );
     }
     res.json({ ok: true, pumps: pumps.rows.length });

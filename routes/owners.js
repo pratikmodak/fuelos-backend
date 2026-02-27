@@ -25,7 +25,7 @@ router.get('/me', requireOwner, async (req, res) => {
 // PATCH /api/owners/me
 router.patch('/me', requireOwner, async (req, res) => {
   try {
-    const allowed = ['name','phone','business_name','gst','pan','address','city','state','whatsapp','whatsapp_num','shift_config','leaderboard_public'];
+    const allowed = ['name','phone','business_name','gst','pan','address','city','state','whatsapp','whatsapp_num','shift_config','leaderboard_public','plan','billing','status','start_date','end_date'];
     const sets = [], vals = [];
     allowed.forEach(k => {
       if (req.body[k] !== undefined) { vals.push(req.body[k]); sets.push(`${k}=$${vals.length}`); }
