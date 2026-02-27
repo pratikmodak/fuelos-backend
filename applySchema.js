@@ -11,7 +11,7 @@ const client = new Client({
 async function run() {
   await client.connect();
 
-  const schema = fs.readFileSync("schema.sql", "utf8");
+  const schema = fs.readFileSync("magrate.sql", "utf8");
   await client.query(schema);
 
   console.log("✅ Schema applied successfully");
