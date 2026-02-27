@@ -9,6 +9,7 @@ router.get('/', requireAuth, async (req, res) => {
     const ownerId = req.user.owner_id || req.user.id;
     const r = await db.query(
       `SELECT fp.id, fp.owner_id, fp.pump_id, fp.petrol, fp.diesel, fp.cng,
+              fp.speed_petrol, fp.speed_diesel,
               fp.effective_date, p.name as pump_name, p.short_name as pump_short_name
        FROM fuel_prices fp
        JOIN pumps p ON p.id = fp.pump_id
@@ -21,9 +22,11 @@ router.get('/', requireAuth, async (req, res) => {
       id: fp.id, ownerId: String(fp.owner_id), owner_id: String(fp.owner_id),
       pumpId: fp.pump_id, pump_id: fp.pump_id,
       pumpName: fp.pump_short_name || fp.pump_name,
-      petrol: parseFloat(fp.petrol || 0),
-      diesel: parseFloat(fp.diesel || 0),
-      cng:    parseFloat(fp.cng    || 0),
+      petrol:       parseFloat(fp.petrol       || 0),
+      diesel:       parseFloat(fp.diesel       || 0),
+      cng:          parseFloat(fp.cng          || 0),
+      speed_petrol: parseFloat(fp.speed_petrol || 0),
+      speed_diesel: parseFloat(fp.speed_diesel || 0),
       effectiveDate: fp.effective_date, effective_date: fp.effective_date, date: fp.effective_date,
     }));
     const latestMap = {};
@@ -54,15 +57,17 @@ router.post('/', requireAuth, async (req, res) => {
     const ownerId = req.user.owner_id || req.user.id;
     const { pump_id, rates, effective_date } = req.body;
     const date   = effective_date || new Date().toISOString().slice(0, 10);
-    const petrol = rates.Petrol || rates.petrol || 0;
-    const diesel = rates.Diesel || rates.diesel || 0;
-    const cng    = rates.CNG    || rates.cng    || 0;
+    const petrol       = rates.Petrol       || rates.petrol       || 0;
+    const diesel       = rates.Diesel       || rates.diesel       || 0;
+    const cng          = rates.CNG          || rates.cng          || 0;
+    const speedPetrol  = rates.SpeedPetrol  || rates.speed_petrol || 0;
+    const speedDiesel  = rates.SpeedDiesel  || rates.speed_diesel || 0;
     await db.query(
-      `INSERT INTO fuel_prices (owner_id,pump_id,petrol,diesel,cng,effective_date)
-       VALUES ($1,$2,$3,$4,$5,$6)
+      `INSERT INTO fuel_prices (owner_id,pump_id,petrol,diesel,cng,speed_petrol,speed_diesel,effective_date)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
        ON CONFLICT (owner_id,pump_id,effective_date)
-       DO UPDATE SET petrol=$3, diesel=$4, cng=$5`,
-      [ownerId, pump_id, petrol, diesel, cng, date]
+       DO UPDATE SET petrol=$3, diesel=$4, cng=$5, speed_petrol=$6, speed_diesel=$7`,
+      [ownerId, pump_id, petrol, diesel, cng, speedPetrol, speedDiesel, date]
     );
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -77,11 +82,12 @@ router.post('/all-pumps', requireAuth, async (req, res) => {
     const pumps = await db.query('SELECT id FROM pumps WHERE owner_id=$1', [ownerId]);
     for (const p of pumps.rows) {
       await db.query(
-        `INSERT INTO fuel_prices (owner_id,pump_id,petrol,diesel,cng,effective_date)
-         VALUES ($1,$2,$3,$4,$5,$6)
+        `INSERT INTO fuel_prices (owner_id,pump_id,petrol,diesel,cng,speed_petrol,speed_diesel,effective_date)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
          ON CONFLICT (owner_id,pump_id,effective_date)
-         DO UPDATE SET petrol=$3, diesel=$4, cng=$5`,
-        [ownerId, p.id, rates.Petrol||rates.petrol||0, rates.Diesel||rates.diesel||0, rates.CNG||rates.cng||0, date]
+         DO UPDATE SET petrol=$3, diesel=$4, cng=$5, speed_petrol=$6, speed_diesel=$7`,
+        [ownerId, p.id, rates.Petrol||rates.petrol||0, rates.Diesel||rates.diesel||0, rates.CNG||rates.cng||0,
+         rates.SpeedPetrol||rates.speed_petrol||0, rates.SpeedDiesel||rates.speed_diesel||0, date]
       );
     }
     res.json({ ok: true, pumps: pumps.rows.length });

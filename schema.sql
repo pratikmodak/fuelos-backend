@@ -50,6 +50,8 @@ CREATE TABLE IF NOT EXISTS owners (
   end_date     DATE DEFAULT (CURRENT_DATE + INTERVAL '30 days'),
   days_used    INTEGER DEFAULT 0,
   amount_paid  NUMERIC(10,2) DEFAULT 0,
+  oil_company  TEXT DEFAULT 'IOCL',   -- IOCL/BPCL/HPCL/RIL/Essar/Shell/Other
+  pump_hours   TEXT DEFAULT '24',      -- 24/18/16/12/custom
   leaderboard_public BOOLEAN DEFAULT FALSE,
   created_at   TIMESTAMPTZ DEFAULT NOW(),
   updated_at   TIMESTAMPTZ DEFAULT NOW()
@@ -80,7 +82,7 @@ CREATE TABLE IF NOT EXISTS nozzles (
   id           TEXT PRIMARY KEY,
   pump_id      TEXT NOT NULL REFERENCES pumps(id) ON DELETE CASCADE,
   owner_id     UUID NOT NULL REFERENCES owners(id) ON DELETE CASCADE,
-  fuel         TEXT NOT NULL CHECK (fuel IN ('Petrol','Diesel','CNG')),
+  fuel         TEXT NOT NULL CHECK (fuel IN ('Petrol','Diesel','CNG','SpeedPetrol','SpeedDiesel')),
   status       TEXT DEFAULT 'Active',
   operator     TEXT,
   open         NUMERIC(12,2) DEFAULT 0,
@@ -212,14 +214,16 @@ CREATE TABLE IF NOT EXISTS transactions (
 -- FUEL PRICES
 -- ─────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS fuel_prices (
-  id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  owner_id     UUID REFERENCES owners(id) ON DELETE CASCADE,
-  pump_id      TEXT REFERENCES pumps(id) ON DELETE CASCADE,
-  petrol       NUMERIC(8,2),
-  diesel       NUMERIC(8,2),
-  cng          NUMERIC(8,2),
+  id             UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  owner_id       UUID REFERENCES owners(id) ON DELETE CASCADE,
+  pump_id        TEXT REFERENCES pumps(id) ON DELETE CASCADE,
+  petrol         NUMERIC(8,2),
+  diesel         NUMERIC(8,2),
+  cng            NUMERIC(8,2),
+  speed_petrol   NUMERIC(8,2),   -- XtraPremium/Speed/Power/V-Power etc.
+  speed_diesel   NUMERIC(8,2),   -- XtraMile/Hi-Speed etc.
   effective_date DATE NOT NULL DEFAULT CURRENT_DATE,
-  created_at   TIMESTAMPTZ DEFAULT NOW()
+  created_at     TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- ─────────────────────────────────────────────
@@ -295,3 +299,60 @@ CREATE INDEX IF NOT EXISTS idx_nozzle_readings_date ON nozzle_readings(owner_id,
 CREATE INDEX IF NOT EXISTS idx_fuel_prices_pump ON fuel_prices(pump_id, effective_date DESC);
 CREATE INDEX IF NOT EXISTS idx_transactions_owner ON transactions(owner_id);
 CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at DESC);
+
+-- ─────────────────────────────────────────────
+-- MIGRATIONS (run if upgrading from initial schema)
+-- ─────────────────────────────────────────────
+-- Add unique constraint for fuel_prices upsert
+ALTER TABLE fuel_prices ADD CONSTRAINT IF NOT EXISTS 
+  fuel_prices_owner_pump_date UNIQUE (owner_id, pump_id, effective_date);
+
+-- ─────────────────────────────────────────────────────────────
+-- MARKET RATES CACHE
+-- Populated daily at 12:01 AM IST by scheduler
+-- Owners read from here — no per-request API calls
+-- ─────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS market_rates_cache (
+  id          SERIAL PRIMARY KEY,
+  city        TEXT NOT NULL,
+  state       TEXT DEFAULT '',
+  petrol      NUMERIC(6,2) DEFAULT 0,
+  diesel      NUMERIC(6,2) DEFAULT 0,
+  cng         NUMERIC(6,2) DEFAULT 0,
+  fetch_date  DATE NOT NULL,
+  source      TEXT DEFAULT 'static',   -- 'rapidapi' or 'static'
+  updated_at  TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE (city, fetch_date)
+);
+
+-- ─────────────────────────────────────────────────────────────
+-- PRICE LOCKS
+-- Owner locks their pump rates — scheduler compares market vs locked
+-- ─────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS price_locks (
+  id          SERIAL PRIMARY KEY,
+  owner_id    UUID REFERENCES owners(id) ON DELETE CASCADE,
+  pump_id     UUID REFERENCES pumps(id) ON DELETE CASCADE,
+  petrol      NUMERIC(6,2) DEFAULT 0,
+  diesel      NUMERIC(6,2) DEFAULT 0,
+  cng         NUMERIC(6,2) DEFAULT 0,
+  locked_at   TIMESTAMPTZ DEFAULT NOW(),
+  locked_date DATE DEFAULT CURRENT_DATE,
+  UNIQUE (owner_id, pump_id)  -- one lock per pump
+);
+
+-- ─────────────────────────────────────────────────────────────
+-- OWNER NOTIFICATIONS
+-- Created by scheduler when market price changes vs locked price
+-- ─────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS owner_notifications (
+  id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  owner_id    UUID REFERENCES owners(id) ON DELETE CASCADE,
+  type        TEXT NOT NULL,  -- 'price_change', 'price_alert', etc.
+  title       TEXT NOT NULL,
+  body        TEXT NOT NULL,
+  data        JSONB DEFAULT '{}',
+  read        BOOLEAN DEFAULT FALSE,
+  created_at  TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_notifs_owner ON owner_notifications(owner_id, created_at DESC);
