@@ -8,19 +8,34 @@ router.get('/', requireAuth, async (req, res) => {
   try {
     const ownerId = req.user.owner_id || req.user.id;
     const r = await db.query(
-      `SELECT fp.*, p.name as pump_name FROM fuel_prices fp
+      `SELECT fp.id, fp.owner_id, fp.pump_id, fp.petrol, fp.diesel, fp.cng,
+              fp.effective_date, p.name as pump_name, p.short_name as pump_short_name
+       FROM fuel_prices fp
        JOIN pumps p ON p.id = fp.pump_id
        WHERE fp.owner_id=$1
        ORDER BY fp.effective_date DESC, fp.pump_id
        LIMIT 200`,
       [ownerId]
     );
-    res.json(r.rows.map(fp => ({
-      id: fp.id, pumpId: fp.pump_id, pump_id: fp.pump_id,
-      pumpName: fp.pump_name, petrol: parseFloat(fp.petrol||0),
-      diesel: parseFloat(fp.diesel||0), cng: parseFloat(fp.cng||0),
-      effectiveDate: fp.effective_date, date: fp.effective_date,
-    })));
+    const all = r.rows.map(fp => ({
+      id:            fp.id,
+      ownerId:       String(fp.owner_id),
+      owner_id:      String(fp.owner_id),
+      pumpId:        fp.pump_id,
+      pump_id:       fp.pump_id,
+      pumpName:      fp.pump_short_name || fp.pump_name,
+      petrol:        parseFloat(fp.petrol || 0),
+      diesel:        parseFloat(fp.diesel || 0),
+      cng:           parseFloat(fp.cng    || 0),
+      effectiveDate: fp.effective_date,
+      effective_date: fp.effective_date,
+      date:          fp.effective_date,
+    }));
+    // Return shape frontend expects: { latest: [...], history: [...] }
+    // latest = most recent entry per pump, history = all
+    const latestMap = {};
+    all.forEach(fp => { if (!latestMap[fp.pump_id]) latestMap[fp.pump_id] = fp; });
+    res.json({ latest: Object.values(latestMap), history: all });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

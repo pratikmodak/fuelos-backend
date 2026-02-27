@@ -42,8 +42,8 @@ router.get('/staff', requireAuth, async (req, res) => {
   try {
     const ownerId = req.user.owner_id || req.user.id;
     const [mgrs, ops] = await Promise.all([
-      db.query('SELECT id,email,name,phone,pump_id,shift,salary,status,created_at FROM managers WHERE owner_id=$1 ORDER BY name', [ownerId]),
-      db.query('SELECT id,email,name,phone,pump_id,shift,nozzles,salary,status,points,streak,created_at FROM operators WHERE owner_id=$1 ORDER BY name', [ownerId]),
+      db.query('SELECT id,owner_id,email,name,phone,pump_id,shift,salary,status,created_at FROM managers WHERE owner_id=$1 ORDER BY name', [ownerId]),
+      db.query('SELECT id,owner_id,email,name,phone,pump_id,shift,nozzles,salary,status,points,streak,created_at FROM operators WHERE owner_id=$1 ORDER BY name', [ownerId]),
     ]);
     res.json({
       managers: mgrs.rows.map(m => ({ ...m, id: String(m.id), pump_id: m.pump_id, pumpId: m.pump_id })),
