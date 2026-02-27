@@ -78,6 +78,7 @@ app.use('/api/payments',     require('./routes/payments'));
 app.use('/api/admin',        require('./routes/admin'));
 app.use('/api/superadmin',   require('./routes/superadmin'));
 app.use('/api/ai',           require('./routes/ai'));
+app.use('/api/notifications', require('./routes/notifications'));
 // WhatsApp log alias (admin route)
 app.get('/api/whatsapp/log', require('./middleware/auth').requireAdmin, (req, res) => res.json([]));
 
@@ -116,6 +117,11 @@ async function start() {
     console.log(`[FuelOS] ✓ Frontend allowed: ${allowedOrigins.join(', ')}`);
     console.log(`[FuelOS] ✓ Razorpay: ${process.env.RAZORPAY_KEY_ID ? 'enabled' : 'demo mode'}`);
     console.log(`[FuelOS] ✓ Email OTP: ${process.env.EMAIL_USER ? 'enabled' : 'log-only mode'}`);
+    console.log(`[FuelOS] ✓ RapidAPI: ${process.env.RAPIDAPI_KEY ? 'enabled (live fuel prices)' : 'not set (static fallback)'}`);
+
+    // Start daily fuel price scheduler (12:01 AM IST)
+    const { scheduleDaily } = require('./scheduler');
+    scheduleDaily();
   });
 }
 
