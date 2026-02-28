@@ -56,14 +56,35 @@ router.get('/:id/nozzles', requireAuth, async (req, res) => {
 // POST /api/pumps/:id/nozzles
 router.post('/:id/nozzles', requireAuth, async (req, res) => {
   try {
-    const { id, fuel, status, operator } = req.body;
+    const { id, fuel, status, operator, open_reading } = req.body;
     const ownerId = req.user.owner_id || req.user.id;
+    const openVal = parseFloat(open_reading) || 0;
     await db.query(
-      `INSERT INTO nozzles (id,pump_id,owner_id,fuel,status,operator) VALUES ($1,$2,$3,$4,$5,$6)
-       ON CONFLICT (id) DO UPDATE SET fuel=$4,status=$5,operator=$6`,
-      [id, req.params.id, ownerId, fuel, status||'Active', operator]
+      `INSERT INTO nozzles (id,pump_id,owner_id,fuel,status,operator,open,close)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$7)
+       ON CONFLICT (id) DO UPDATE SET fuel=$4,status=$5,operator=$6,open=$7`,
+      [id, req.params.id, ownerId, fuel, status||'Active', operator||'', openVal]
     );
-    res.json({ ok: true, id });
+    res.json({ ok: true, id, open_reading: openVal });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// PATCH /api/pumps/:id/nozzles/:nozzleId — edit fuel type, operator, or reset opening reading
+router.patch('/:id/nozzles/:nozzleId', requireAuth, async (req, res) => {
+  try {
+    const { fuel, operator, status, open_reading } = req.body;
+    const sets = [], vals = [];
+    if (fuel        !== undefined) { vals.push(fuel);                    sets.push(`fuel=$${vals.length}`); }
+    if (operator    !== undefined) { vals.push(operator);                sets.push(`operator=$${vals.length}`); }
+    if (status      !== undefined) { vals.push(status);                  sets.push(`status=$${vals.length}`); }
+    if (open_reading!== undefined) { vals.push(parseFloat(open_reading)||0); sets.push(`open=$${vals.length}`); }
+    if (!sets.length) return res.json({ ok: true });
+    vals.push(req.params.nozzleId, req.params.id);
+    await db.query(
+      `UPDATE nozzles SET ${sets.join(',')} WHERE id=$${vals.length-1} AND pump_id=$${vals.length}`,
+      vals
+    );
+    res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

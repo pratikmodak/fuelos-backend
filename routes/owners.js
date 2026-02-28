@@ -15,6 +15,7 @@ router.get('/me', requireOwner, async (req, res) => {
       plan: o.plan, billing: o.billing, status: o.status,
       business_name: o.business_name, gst: o.gst, pan: o.pan, address: o.address,
       city: o.city, state: o.state, whatsapp: o.whatsapp, whatsapp_num: o.whatsapp_num,
+      oil_company: o.oil_company || 'IOCL', pump_hours: o.pump_hours || '24',
       start_date: o.start_date, end_date: o.end_date, days_used: o.days_used,
       amount_paid: o.amount_paid, shift_config: o.shift_config || [],
       leaderboard_public: o.leaderboard_public,
@@ -25,7 +26,7 @@ router.get('/me', requireOwner, async (req, res) => {
 // PATCH /api/owners/me
 router.patch('/me', requireOwner, async (req, res) => {
   try {
-    const allowed = ['name','phone','business_name','gst','pan','address','city','state','whatsapp','whatsapp_num','shift_config','leaderboard_public','plan','billing','status','start_date','end_date'];
+    const allowed = ['name','phone','business_name','gst','pan','address','city','state','whatsapp','whatsapp_num','shift_config','leaderboard_public','plan','billing','status','start_date','end_date','oil_company','pump_hours'];
     const sets = [], vals = [];
     allowed.forEach(k => {
       if (req.body[k] !== undefined) { vals.push(req.body[k]); sets.push(`${k}=$${vals.length}`); }
