@@ -139,3 +139,68 @@ router.patch('/:id/confirm', requireAuth, async (req, res) => {
 });
 
 module.exports = router;
+
+// ════════════════════════════════════════════════
+// DAILY NOZZLE ASSIGNMENTS
+// ════════════════════════════════════════════════
+
+// POST /api/shifts/assign-nozzles — manager assigns nozzles to an operator for date+shift
+router.post('/assign-nozzles', requireAuth, async (req, res) => {
+  try {
+    const { operator_id, pump_id, date, shift, nozzle_ids } = req.body;
+    if (!operator_id || !pump_id || !date || !shift)
+      return res.status(400).json({ error: 'operator_id, pump_id, date, shift required' });
+    const ownerId = req.user.owner_id || req.user.id;
+    const nozzleStr = Array.isArray(nozzle_ids) ? nozzle_ids.join(',') : (nozzle_ids || '');
+    const r = await db.query(
+      `INSERT INTO daily_nozzle_assignments
+         (owner_id, pump_id, operator_id, date, shift, nozzle_ids, assigned_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)
+       ON CONFLICT (pump_id, operator_id, date, shift)
+       DO UPDATE SET nozzle_ids=$6, assigned_by=$7, updated_at=NOW()
+       RETURNING *`,
+      [ownerId, pump_id, operator_id, date, shift, nozzleStr, req.user.email]
+    );
+    res.json({ ok: true, assignment: r.rows[0] });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/shifts/assignments?pump_id=&date= — manager gets all assignments for a pump/date
+router.get('/assignments', requireAuth, async (req, res) => {
+  try {
+    const { pump_id, date } = req.query;
+    const ownerId = req.user.owner_id || req.user.id;
+    const where = ['owner_id=$1'];
+    const vals  = [ownerId];
+    if (pump_id) { vals.push(pump_id);  where.push(`pump_id=$${vals.length}`); }
+    if (date)    { vals.push(date);     where.push(`date=$${vals.length}`); }
+    const r = await db.query(
+      `SELECT * FROM daily_nozzle_assignments WHERE ${where.join(' AND ')} ORDER BY date DESC, shift`,
+      vals
+    );
+    res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/shifts/my-nozzles?date=&shift= — operator gets their assigned nozzles
+router.get('/my-nozzles', requireAuth, async (req, res) => {
+  try {
+    const { date, shift } = req.query;
+    const operatorId = req.user.id;
+    const today = date || new Date().toISOString().split('T')[0];
+    // Get ALL shifts for today so operator can see across shifts
+    const r = await db.query(
+      `SELECT * FROM daily_nozzle_assignments
+       WHERE operator_id=$1 AND date=$2
+       ORDER BY shift`,
+      [operatorId, today]
+    );
+    if (r.rows.length === 0) return res.json({ nozzle_ids: [], assignments: [] });
+    // If shift specified, filter; else merge all
+    const relevant = shift ? r.rows.filter(a => a.shift === shift) : r.rows;
+    const allNozzleIds = [...new Set(
+      relevant.flatMap(a => a.nozzle_ids ? a.nozzle_ids.split(',').filter(Boolean) : [])
+    )];
+    res.json({ nozzle_ids: allNozzleIds, assignments: r.rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
