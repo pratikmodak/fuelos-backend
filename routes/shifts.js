@@ -22,9 +22,14 @@ router.get('/', requireAuth, async (req, res) => {
       pumpId: s.pump_id, operatorId: String(s.operator_id||''),
       nozzleReadings: s.nozzle_readings || [],
       totalRevenue: parseFloat(s.total_revenue||0),
-      petrolVol: parseFloat(s.petrol_vol||0),
-      dieselVol: parseFloat(s.diesel_vol||0),
-      cngVol: parseFloat(s.cng_vol||0),
+      petrolVol:    parseFloat(s.petrol_vol||0),
+      dieselVol:    parseFloat(s.diesel_vol||0),
+      cngVol:       parseFloat(s.cng_vol||0),
+      date:         String(s.date||'').slice(0,10), // normalize DATE → YYYY-MM-DD
+      totalSales:   parseFloat(s.total_revenue||0),
+      cash:         parseFloat(s.cash||0),
+      upi:          parseFloat(s.upi||0),
+      card:         parseFloat(s.card||0),
     })));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -44,9 +49,15 @@ router.get('/readings', requireAuth, async (req, res) => {
     const r = await db.query(q, vals);
     res.json(r.rows.map(nr => ({
       ...nr,
-      pumpId: nr.pump_id, nozzleId: nr.nozzle_id,
-      openReading: parseFloat(nr.open_reading||0),
+      pumpId:       nr.pump_id,
+      nozzleId:     nr.nozzle_id,
+      openReading:  parseFloat(nr.open_reading||0),
       closeReading: parseFloat(nr.close_reading||0),
+      date:         String(nr.date||'').slice(0,10), // normalize DATE → YYYY-MM-DD
+      status:       nr.status || 'Submitted',        // nozzle_readings has no status col yet; default Submitted
+      shiftIndex:   nr.shift_index ?? nr.shiftIndex ?? 0,
+      saleVol:      parseFloat(nr.volume||0),
+      revenue:      parseFloat(nr.revenue||0),
     })));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -130,15 +141,19 @@ router.delete('/:id', requireAuth, async (req, res) => {
 router.patch('/:id/confirm', requireAuth, async (req, res) => {
   try {
     const ownerId = req.user.owner_id || req.user.id;
+    const { note, cash_received, card_received, upi_received, confirmed_by } = req.body;
     await db.query(
-      `UPDATE shift_reports SET status='Confirmed', note=$1 WHERE id=$2 AND owner_id=$3`,
-      [req.body.note, req.params.id, ownerId]
+      `UPDATE shift_reports
+       SET status='Confirmed', note=$1,
+           cash_received=$2, card_received=$3, upi_received=$4,
+           confirmed_by=$5, confirmed_at=NOW()
+       WHERE id=$6 AND owner_id=$7`,
+      [note||'', parseFloat(cash_received)||0, parseFloat(card_received)||0,
+       parseFloat(upi_received)||0, confirmed_by||'', req.params.id, ownerId]
     );
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
-
-module.exports = router;
 
 // ════════════════════════════════════════════════
 // DAILY NOZZLE ASSIGNMENTS
@@ -204,3 +219,5 @@ router.get('/my-nozzles', requireAuth, async (req, res) => {
     res.json({ nozzle_ids: allNozzleIds, assignments: r.rows });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
+
+module.exports = router;
