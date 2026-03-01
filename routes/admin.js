@@ -156,27 +156,69 @@ router.get('/transactions', requireAdmin, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// GET /api/admin/config
+// GET /api/admin/config — reads from DB (persists across restarts + logouts)
 router.get('/config', requireAdmin, async (req, res) => {
   try {
-    // Return non-sensitive config
+    const r = await db.query('SELECT key, value FROM app_config');
+    const cfg = {};
+    r.rows.forEach(row => { cfg[row.key] = row.value; });
+
+    // Merge DB config with env vars (DB wins for non-empty values)
+    const waKey   = cfg.wa_api_key       || process.env.WA_API_KEY       || '';
+    const rzpLive = cfg.rzp_live_key_id  || process.env.RAZORPAY_KEY_ID  || '';
+    const rzpTest = cfg.rzp_test_key_id  || '';
+    const emailUsr= cfg.email_user       || process.env.EMAIL_USER       || '';
+
     res.json({
-      razorpay_enabled: !!(process.env.RAZORPAY_KEY_ID),
-      email_enabled:    !!(process.env.EMAIL_USER),
-      wa_enabled:       !!(process.env.WA_API_KEY),
-      razorpay_mode:    process.env.RAZORPAY_KEY_ID?.startsWith('rzp_live') ? 'live' : 'test',
-      razorpay_key_id:  process.env.RAZORPAY_KEY_ID || null,
-      wa_source:        process.env.WA_SOURCE || null,
-      saved:            !!(process.env.RAZORPAY_KEY_ID || process.env.WA_API_KEY),
+      // Razorpay
+      rzp_mode:             cfg.rzp_mode || (rzpLive.startsWith('rzp_live') ? 'live' : 'test'),
+      rzp_live_key_id:      rzpLive,
+      rzp_live_key_secret:  cfg.rzp_live_key_secret || '',
+      rzp_test_key_id:      rzpTest,
+      rzp_test_key_secret:  cfg.rzp_test_key_secret || '',
+      rzp_webhook_secret:   cfg.rzp_webhook_secret  || '',
+      razorpay_enabled:     !!(rzpLive || rzpTest),
+      razorpay_mode:        cfg.rzp_mode || 'test',
+      // WhatsApp
+      wa_provider:          cfg.wa_provider        || 'meta',
+      wa_api_key:           waKey,
+      wa_phone_number_id:   cfg.wa_phone_number_id || '',
+      wa_waba_id:           cfg.wa_waba_id         || '',
+      wa_number:            cfg.wa_number          || '',
+      wa_enabled:           !!waKey,
+      // Email
+      email_user:           emailUsr,
+      email_pass:           cfg.email_pass ? '••••••••' : '',
+      email_enabled:        !!emailUsr,
+      saved: !!(waKey || rzpLive || rzpTest || emailUsr),
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// POST /api/admin/config — save config (admin sets env-like settings)
+// POST /api/admin/config — persist config to DB (survives logout + restarts)
 router.post('/config', requireAdmin, async (req, res) => {
-  // In production on Render, env vars are set via dashboard, not API.
-  // This endpoint exists for UI compatibility but notes that restart is needed.
-  res.json({ ok: true, note: 'Config saved. Env vars must be set in Render Dashboard for persistence.' });
+  try {
+    const allowed = [
+      'rzp_mode','rzp_live_key_id','rzp_live_key_secret',
+      'rzp_test_key_id','rzp_test_key_secret','rzp_webhook_secret',
+      'wa_provider','wa_api_key','wa_phone_number_id','wa_waba_id','wa_number',
+      'email_user','email_pass',
+    ];
+    const body = req.body || {};
+    for (const key of allowed) {
+      const val = body[key];
+      if (val === undefined || val === null) continue;
+      const strVal = String(val).trim();
+      if (!strVal || strVal === '••••••••') continue; // skip empty / masked
+      await db.query(
+        `INSERT INTO app_config (key, value, updated_at)
+         VALUES ($1, $2, NOW())
+         ON CONFLICT (key) DO UPDATE SET value=$2, updated_at=NOW()`,
+        [key, strVal]
+      );
+    }
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // GET /api/admin/audit
