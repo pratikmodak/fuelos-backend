@@ -17,7 +17,6 @@ const allowedOrigins = [
   'http://localhost:3000',
   'https://fuelos.vercel.app',
   'https://fuelos-v.vercel.app',
-   'https://fuelos.ligeratechnology.com',
 ].filter(Boolean);
 
 app.use(cors({
@@ -81,6 +80,7 @@ app.use('/api/admin',        require('./routes/admin'));
 app.use('/api/superadmin',   require('./routes/superadmin'));
 app.use('/api/ai',           require('./routes/ai'));
 app.use('/api/notifications', require('./routes/notifications'));
+app.use('/webhook/whatsapp',  require('./routes/whatsapp-webhook')); // Meta WA webhook
 // WhatsApp log alias (admin route)
 app.get('/api/whatsapp/log', require('./middleware/auth').requireAdmin, (req, res) => res.json([]));
 

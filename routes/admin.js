@@ -185,6 +185,7 @@ router.get('/config', requireAdmin, async (req, res) => {
       wa_phone_number_id:   cfg.wa_phone_number_id || '',
       wa_waba_id:           cfg.wa_waba_id         || '',
       wa_number:            cfg.wa_number          || '',
+      wa_verify_token:      cfg.wa_verify_token    || 'fuelos_webhook_verify',
       wa_enabled:           !!waKey,
       // Email
       email_user:           emailUsr,
@@ -201,7 +202,7 @@ router.post('/config', requireAdmin, async (req, res) => {
     const allowed = [
       'rzp_mode','rzp_live_key_id','rzp_live_key_secret',
       'rzp_test_key_id','rzp_test_key_secret','rzp_webhook_secret',
-      'wa_provider','wa_api_key','wa_phone_number_id','wa_waba_id','wa_number',
+      'wa_provider','wa_api_key','wa_phone_number_id','wa_waba_id','wa_number','wa_verify_token',
       'email_user','email_pass',
     ];
     const body = req.body || {};
