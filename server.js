@@ -17,6 +17,7 @@ const allowedOrigins = [
   'http://localhost:3000',
   'https://fuelos.vercel.app',
   'https://fuelos-v.vercel.app',
+  'https://fuelos.ligeratechnology.com',
 ].filter(Boolean);
 
 app.use(cors({
