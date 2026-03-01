@@ -116,19 +116,114 @@ router.get('/subscriptions', requireAdmin, async (req, res) => {
 // ════════════════════════════════════════════════
 router.get('/health', requireAdmin, async (req, res) => {
   try {
-    const start = Date.now();
+    // 1. Database
+    const dbStart = Date.now();
     await db.query('SELECT 1');
-    const dbLatency = Date.now() - start;
+    const dbLatency = Date.now() - dbStart;
+
+    // 2. Razorpay (payment gateway)
+    const razorpayKey = process.env.RAZORPAY_KEY_ID || '';
+    const razorpayOk  = !!razorpayKey;
+    const razorpayMode = razorpayKey.startsWith('rzp_live') ? 'live' : razorpayKey ? 'test' : null;
+
+    // 3. Email / SMTP
+    const emailOk = !!(process.env.EMAIL_USER && process.env.EMAIL_PASS);
+
+    // 4. WhatsApp API
+    const waOk  = !!(process.env.WA_API_KEY);
+    const waSrc = process.env.WA_SOURCE || null;
+
+    // 5. Anthropic AI (Claude insights)
+    const aiOk = !!(process.env.ANTHROPIC_API_KEY);
+
+    // 6. RapidAPI (live fuel prices)
+    const rapidOk = !!(process.env.RAPIDAPI_KEY);
+
+    // 7. Count recent WA messages
+    let waMessages = null, waDelivered = null;
+    if (waOk) {
+      try {
+        const wr = await db.query(
+          `SELECT COUNT(*) AS sent,
+                  COUNT(*) FILTER (WHERE status='delivered') AS delivered
+           FROM notifications
+           WHERE created_at >= NOW() - INTERVAL '24 hours'`
+        );
+        waMessages  = parseInt(wr.rows[0]?.sent     || 0);
+        waDelivered = parseInt(wr.rows[0]?.delivered || 0);
+      } catch {}
+    }
+
+    // 8. Recent payment transactions
+    let txns24h = null, failed24h = null;
+    try {
+      const tr = await db.query(
+        `SELECT COUNT(*) AS total,
+                COUNT(*) FILTER (WHERE status != 'Success') AS failed
+         FROM transactions
+         WHERE created_at >= NOW() - INTERVAL '24 hours'`
+      );
+      txns24h  = parseInt(tr.rows[0]?.total  || 0);
+      failed24h = parseInt(tr.rows[0]?.failed || 0);
+    } catch {}
+
+    const services = [
+      {
+        name:       'PostgreSQL Database',
+        type:       'database',
+        icon:       '🗄️',
+        status:     'Online',
+        latency_ms: dbLatency,
+        version:    null,
+      },
+      {
+        name:       'Razorpay Payments',
+        type:       'payment-gateway',
+        icon:       '💳',
+        status:     razorpayOk ? 'Active' : 'Not Configured',
+        version:    razorpayMode,
+        txns_24h:   txns24h,
+        failed_24h: failed24h,
+      },
+      {
+        name:       'WhatsApp Messaging',
+        type:       'messaging',
+        icon:       '📱',
+        status:     waOk ? 'Active' : 'Not Configured',
+        messages_24h:  waMessages,
+        delivered_24h: waDelivered,
+      },
+      {
+        name:       'Email / SMTP',
+        type:       'email',
+        icon:       '📧',
+        status:     emailOk ? 'Active' : 'Not Configured',
+      },
+      {
+        name:       'Anthropic AI (Claude)',
+        type:       'ai-api',
+        icon:       '🤖',
+        status:     aiOk ? 'Active' : 'Not Configured',
+      },
+      {
+        name:       'RapidAPI Fuel Prices',
+        type:       'market-data',
+        icon:       '⛽',
+        status:     rapidOk ? 'Active' : 'Not Configured',
+      },
+    ];
+
     res.json({
       status:     'ok',
       db:         true,
       db_latency: dbLatency,
-      uptime:     process.uptime(),
-      memory:     process.memoryUsage().heapUsed,
+      uptime:     Math.round(process.uptime()),
+      memory_mb:  Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
       version:    process.env.npm_package_version || '3.0.0',
       node:       process.version,
+      services,
     });
-  } catch (e) { res.status(500).json({ status: 'error', db: false, error: e.message }); }
+  } catch (e) { res.status(500).json({ status: 'error', db: false, error: e.message, services: [] }); }
 });
 
 // ════════════════════════════════════════════════
