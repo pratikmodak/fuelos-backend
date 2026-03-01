@@ -36,6 +36,7 @@ router.get('/', requireAuth, async (req, res) => {
 });
 
 // GET /api/fuel-prices/today?pump_id=X
+// Returns { rates: { Petrol, Diesel, CNG, SpeedPetrol, SpeedDiesel }, date, pumpId }
 router.get('/today', requireAuth, async (req, res) => {
   try {
     const ownerId = req.user.owner_id || req.user.id;
@@ -44,10 +45,26 @@ router.get('/today', requireAuth, async (req, res) => {
       [ownerId, req.query.pump_id]
     );
     const fp = r.rows[0];
-    res.json(fp
-      ? { pumpId: fp.pump_id, petrol: parseFloat(fp.petrol||0), diesel: parseFloat(fp.diesel||0), cng: parseFloat(fp.cng||0), date: fp.effective_date }
-      : { pumpId: req.query.pump_id, petrol: 0, diesel: 0, cng: 0 }
-    );
+    if (!fp) {
+      return res.json({ pumpId: req.query.pump_id, rates: { Petrol: 0, Diesel: 0, CNG: 0, SpeedPetrol: 0, SpeedDiesel: 0 }, date: null });
+    }
+    res.json({
+      pumpId: fp.pump_id,
+      date:   fp.effective_date,
+      rates: {
+        Petrol:      parseFloat(fp.petrol      || 0),
+        Diesel:      parseFloat(fp.diesel      || 0),
+        CNG:         parseFloat(fp.cng         || 0),
+        SpeedPetrol: parseFloat(fp.speed_petrol|| 0),
+        SpeedDiesel: parseFloat(fp.speed_diesel|| 0),
+      },
+      // keep flat fields for backward compat
+      petrol:       parseFloat(fp.petrol      || 0),
+      diesel:       parseFloat(fp.diesel      || 0),
+      cng:          parseFloat(fp.cng         || 0),
+      speed_petrol: parseFloat(fp.speed_petrol|| 0),
+      speed_diesel: parseFloat(fp.speed_diesel|| 0),
+    });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
