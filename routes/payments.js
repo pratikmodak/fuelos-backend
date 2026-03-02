@@ -1,17 +1,41 @@
 // routes/payments.js
-const router = require('express').Router();
-const db = require('../db');
+const router  = require('express').Router();
+const db      = require('../db');
+const crypto  = require('crypto');
 const { requireAuth } = require('../middleware/auth');
 
-// Razorpay instance (optional — only if keys are set)
-let razorpay = null;
-if (process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET) {
+// Get Razorpay keys — DB wins over env vars (admin can update via UI without redeploy)
+const getRazorpayKeys = async () => {
+  try {
+    const r = await db.query(
+      "SELECT key, value FROM app_config WHERE key IN ('rzp_live_key_id','rzp_live_key_secret','rzp_test_key_id','rzp_test_key_secret','rzp_mode')"
+    );
+    const cfg = {};
+    r.rows.forEach(row => { cfg[row.key] = row.value; });
+    const mode      = cfg.rzp_mode || 'test';
+    const keyId     = mode === 'live'
+      ? (cfg.rzp_live_key_id     || process.env.RAZORPAY_KEY_ID     || '')
+      : (cfg.rzp_test_key_id     || process.env.RAZORPAY_KEY_ID     || '');
+    const keySecret = mode === 'live'
+      ? (cfg.rzp_live_key_secret || process.env.RAZORPAY_KEY_SECRET || '')
+      : (cfg.rzp_test_key_secret || process.env.RAZORPAY_KEY_SECRET || '');
+    return { keyId, keySecret, mode };
+  } catch {
+    return {
+      keyId:     process.env.RAZORPAY_KEY_ID     || '',
+      keySecret: process.env.RAZORPAY_KEY_SECRET || '',
+      mode:      'test',
+    };
+  }
+};
+
+// Build Razorpay instance lazily per-request so admin key changes take effect immediately
+const getRazorpay = async () => {
+  const { keyId, keySecret } = await getRazorpayKeys();
+  if (!keyId || !keySecret) return null;
   const Razorpay = require('razorpay');
-  razorpay = new Razorpay({
-    key_id:     process.env.RAZORPAY_KEY_ID,
-    key_secret: process.env.RAZORPAY_KEY_SECRET,
-  });
-}
+  return new Razorpay({ key_id: keyId, key_secret: keySecret });
+};
 
 const PLANS = {
   Starter:    { monthly: 799,  yearly: 7990  },
@@ -27,33 +51,39 @@ router.post('/create-order', requireAuth, async (req, res) => {
     if (!planPrices) return res.status(400).json({ error: 'Invalid plan' });
 
     const base   = planPrices[billing] || planPrices.monthly;
-    const credit = 0; // coupon logic here if needed
+    const credit = 0;
     const gst    = Math.round((base - credit) * 0.18);
     const amount = base - credit + gst;
 
-    if (!razorpay) {
-      // Demo mode — return fake order
+    const { keyId, keySecret, mode } = await getRazorpayKeys();
+    const rzp = await getRazorpay();
+
+    if (!rzp) {
+      // No keys configured — demo mode
       return res.json({
-        order_id:   'order_demo_' + Date.now(),
-        amount,
-        base,
-        gst,
-        credit,
-        currency:   'INR',
-        demo:       true,
-        key:        process.env.RAZORPAY_KEY_ID || 'rzp_test_demo',
+        order_id: 'order_demo_' + Date.now(),
+        amount, base, gst, credit,
+        currency: 'INR',
+        demo: true,
+        key: keyId || 'rzp_test_demo',
       });
     }
 
-    const order = await razorpay.orders.create({
-      amount:   amount * 100,
+    const order = await rzp.orders.create({
+      amount:   amount * 100, // paise
       currency: 'INR',
       receipt:  `fuelos_${req.user.owner_id}_${Date.now()}`,
       notes:    { plan, billing, owner_id: String(req.user.owner_id) },
     });
 
-    res.json({ order_id: order.id, amount, base, gst, credit, currency: 'INR', key: process.env.RAZORPAY_KEY_ID });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+    res.json({
+      order_id: order.id, amount, base, gst, credit,
+      currency: 'INR', key: keyId, mode,
+    });
+  } catch (e) {
+    console.error('[payments/create-order]', e.message);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // POST /api/payments/verify
@@ -62,12 +92,13 @@ router.post('/verify', requireAuth, async (req, res) => {
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature, txnId, plan, billing } = req.body;
     const ownerId = req.user.owner_id || req.user.id;
 
+    const { keySecret } = await getRazorpayKeys();
+    const rzp = await getRazorpay();
+
     // Verify Razorpay signature
-    if (razorpay && razorpay_signature) {
-      const crypto = require('crypto');
-      const body = razorpay_order_id + '|' + razorpay_payment_id;
-      const expected = crypto.createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
-        .update(body).digest('hex');
+    if (rzp && razorpay_signature && keySecret) {
+      const body     = razorpay_order_id + '|' + razorpay_payment_id;
+      const expected = crypto.createHmac('sha256', keySecret).update(body).digest('hex');
       if (expected !== razorpay_signature) {
         return res.status(400).json({ error: 'Payment verification failed' });
       }
@@ -75,9 +106,9 @@ router.post('/verify', requireAuth, async (req, res) => {
 
     // Fetch order details to get plan info
     let orderPlan = plan, orderBilling = billing;
-    if (razorpay && razorpay_order_id && !razorpay_order_id.startsWith('order_demo')) {
+    if (rzp && razorpay_order_id && !razorpay_order_id.startsWith('order_demo')) {
       try {
-        const order = await razorpay.orders.fetch(razorpay_order_id);
+        const order = await rzp.orders.fetch(razorpay_order_id);
         orderPlan    = order.notes?.plan    || plan;
         orderBilling = order.notes?.billing || billing;
       } catch {}
