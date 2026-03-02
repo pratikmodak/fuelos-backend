@@ -1,3 +1,4 @@
+const wa = require('../services/whatsapp');
 // routes/admin.js — Admin portal: owner management, config, audit
 const router = require('express').Router();
 const bcrypt = require('bcryptjs');
@@ -286,6 +287,21 @@ router.patch('/shifts/:id', requireAdmin, async (req, res) => {
 router.get('/whatsapp-log', requireAdmin, async (req, res) => {
   // Placeholder — integrate with actual WA provider for logs
   res.json([]);
+});
+
+// POST /api/admin/test-whatsapp — send a real test message to verify integration
+router.post('/test-whatsapp', requireAdmin, async (req, res) => {
+  try {
+    const { to } = req.body; // optional override number
+    const result = await wa.testConnection(to || '');
+    if (result.ok) {
+      res.json({ ok: true, messageId: result.messageId, message: 'Test message sent successfully!' });
+    } else {
+      res.status(400).json({ ok: false, error: result.error, step: result.step });
+    }
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
 });
 
 module.exports = router;

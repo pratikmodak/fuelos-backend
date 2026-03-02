@@ -62,6 +62,8 @@ router.get('/readings', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+const wa = require('../services/whatsapp');
+
 // POST /api/shifts — submit shift report
 router.post('/', requireAuth, async (req, res) => {
   try {
@@ -121,6 +123,37 @@ router.post('/', requireAuth, async (req, res) => {
     }
 
     res.json({ ok: true, id: s.id });
+
+    // ── Non-blocking WhatsApp notification to owner
+    setImmediate(async () => {
+      try {
+        // Get owner's WhatsApp number
+        const ownerRow = await db.query(
+          'SELECT whatsapp_num, name FROM owners WHERE id=$1', [ownerId]
+        );
+        const ownerPhone = ownerRow.rows[0]?.whatsapp_num;
+        if (!ownerPhone) return; // owner hasn't set WA number — skip silently
+
+        // Get pump name
+        const pumpRow = await db.query('SELECT name FROM pumps WHERE id=$1', [s.pumpId||s.pump_id]);
+        const pumpName = pumpRow.rows[0]?.name || 'Pump';
+
+        await wa.notifyShiftSubmitted(ownerPhone, {
+          operator:     s.operator,
+          shift:        s.shift,
+          pumpName,
+          date:         s.date,
+          totalRevenue: totalRevenue,
+          cash:         s.cash||0,
+          upi:          s.upi||0,
+          card:         s.card||0,
+          petrolVol:    s.petrolVol||s.petrol_vol||0,
+          dieselVol:    s.dieselVol||s.diesel_vol||0,
+        });
+      } catch (e) {
+        console.warn('[shifts/wa-notify]', e.message);
+      }
+    });
   } catch (e) {
     console.error('[shifts/post]', e);
     res.status(500).json({ error: e.message });
