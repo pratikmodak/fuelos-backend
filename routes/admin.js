@@ -159,6 +159,10 @@ router.get('/transactions', requireAdmin, async (req, res) => {
 // GET /api/admin/config — reads from DB (persists across restarts + logouts)
 router.get('/config', requireAdmin, async (req, res) => {
   try {
+    // Auto-create table if missing (fresh DB)
+    await db.query(`CREATE TABLE IF NOT EXISTS app_config (
+      key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`).catch(() => {});
     const r = await db.query('SELECT key, value FROM app_config');
     const cfg = {};
     r.rows.forEach(row => { cfg[row.key] = row.value; });
@@ -199,6 +203,10 @@ router.get('/config', requireAdmin, async (req, res) => {
 // POST /api/admin/config — persist config to DB (survives logout + restarts)
 router.post('/config', requireAdmin, async (req, res) => {
   try {
+    // Auto-create table if missing
+    await db.query(`CREATE TABLE IF NOT EXISTS app_config (
+      key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`).catch(() => {});
     const allowed = [
       'rzp_mode','rzp_live_key_id','rzp_live_key_secret',
       'rzp_test_key_id','rzp_test_key_secret','rzp_webhook_secret',
