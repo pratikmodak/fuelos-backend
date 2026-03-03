@@ -2,7 +2,7 @@
 const router = require('express').Router();
 const bcrypt = require('bcryptjs');
 const db = require('../db');
-const { requireAuth, requireOwner } = require('../middleware/auth');
+const { requireAuth, requireOwner, requireOwnerOrManager } = require('../middleware/auth');
 
 // GET /api/owners/me
 router.get('/me', requireOwner, async (req, res) => {
@@ -202,7 +202,7 @@ const ensureCreditTxnTable = async () => {
 };
 
 // GET /api/owners/credit-customers
-router.get('/credit-customers', requireOwner, async (req, res) => {
+router.get('/credit-customers', requireOwnerOrManager, async (req, res) => {
   try {
     const ownerId = req.user.owner_id || req.user.id;
     const r = await db.query(
@@ -217,7 +217,7 @@ router.get('/credit-customers', requireOwner, async (req, res) => {
 });
 
 // POST /api/owners/credit-customers
-router.post('/credit-customers', requireOwner, async (req, res) => {
+router.post('/credit-customers', requireOwnerOrManager, async (req, res) => {
   try {
     const ownerId = req.user.owner_id || req.user.id;
     const { id, name, phone, pumpId, limit } = req.body;
@@ -232,7 +232,7 @@ router.post('/credit-customers', requireOwner, async (req, res) => {
 });
 
 // GET /api/owners/credit-customers/:id/transactions
-router.get('/credit-customers/:id/transactions', requireOwner, async (req, res) => {
+router.get('/credit-customers/:id/transactions', requireOwnerOrManager, async (req, res) => {
   try {
     await ensureCreditTxnTable();
     const r = await db.query(
@@ -248,7 +248,7 @@ router.get('/credit-customers/:id/transactions', requireOwner, async (req, res) 
 });
 
 // POST /api/owners/credit-customers/:id/purchase  (add fuel purchase on credit)
-router.post('/credit-customers/:id/purchase', requireOwner, async (req, res) => {
+router.post('/credit-customers/:id/purchase', requireOwnerOrManager, async (req, res) => {
   try {
     await ensureCreditTxnTable();
     const ownerId = req.user.owner_id || req.user.id;
@@ -267,7 +267,7 @@ router.post('/credit-customers/:id/purchase', requireOwner, async (req, res) => 
 });
 
 // POST /api/owners/credit-customers/:id/collect  (record payment collection)
-router.post('/credit-customers/:id/collect', requireOwner, async (req, res) => {
+router.post('/credit-customers/:id/collect', requireOwnerOrManager, async (req, res) => {
   try {
     await ensureCreditTxnTable();
     const ownerId = req.user.owner_id || req.user.id;

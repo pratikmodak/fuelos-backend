@@ -67,4 +67,14 @@ const requireAuthOrAdmin = (req, res, next) => {
   }
 };
 
-module.exports = { requireAuth, requireAdmin, requireSuperAdmin, requireOwner, requireAuthOrAdmin };
+// Allow owner OR manager (manager has owner_id in token)
+const requireOwnerOrManager = (req, res, next) => {
+  requireAuth(req, res, () => {
+    if (!['owner', 'manager'].includes(req.user.role)) {
+      return res.status(403).json({ error: 'Owner or Manager access required' });
+    }
+    next();
+  });
+};
+
+module.exports = { requireAuth, requireAdmin, requireSuperAdmin, requireOwner, requireAuthOrAdmin, requireOwnerOrManager };
