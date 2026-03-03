@@ -172,10 +172,11 @@ module.exports = router;
 // ─── Credit Customers ─────────────────────────────────────
 // Auto-create credit_transactions table
 const ensureCreditTxnTable = async () => {
+  // Create table without FK on customer_id (customers may be from localStorage)
   await db.query(`CREATE TABLE IF NOT EXISTS credit_transactions (
     id           TEXT PRIMARY KEY,
     owner_id     UUID REFERENCES owners(id) ON DELETE CASCADE,
-    customer_id  TEXT REFERENCES credit_customers(id) ON DELETE CASCADE,
+    customer_id  TEXT,
     pump_id      TEXT,
     date         DATE NOT NULL DEFAULT CURRENT_DATE,
     fuel         TEXT,
@@ -186,6 +187,18 @@ const ensureCreditTxnTable = async () => {
     note         TEXT,
     created_at   TIMESTAMPTZ DEFAULT NOW()
   )`);
+  // Drop FK constraint if it exists from a previous deployment
+  await db.query(`
+    DO $$ BEGIN
+      IF EXISTS (
+        SELECT 1 FROM information_schema.table_constraints
+        WHERE constraint_name='credit_transactions_customer_id_fkey'
+        AND table_name='credit_transactions'
+      ) THEN
+        ALTER TABLE credit_transactions DROP CONSTRAINT credit_transactions_customer_id_fkey;
+      END IF;
+    END $$;
+  `).catch(() => {}); // ignore if already dropped
 };
 
 // GET /api/owners/credit-customers
