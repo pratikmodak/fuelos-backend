@@ -167,7 +167,6 @@ router.patch('/managers/:id', requireOwner, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-module.exports = router;
 
 // ─── Credit Customers ─────────────────────────────────────
 // Auto-create credit_transactions table
@@ -221,6 +220,13 @@ router.post('/credit-customers', requireOwnerOrManager, async (req, res) => {
   try {
     const ownerId = req.user.owner_id || req.user.id;
     const { id, name, phone, pumpId, limit } = req.body;
+    const dup = await db.query(
+      `SELECT id FROM credit_customers WHERE owner_id=$1 AND LOWER(TRIM(name))=LOWER(TRIM($2))`,
+      [ownerId, name]
+    );
+    if (dup.rows.length > 0) {
+      return res.status(409).json({ error: 'Customer already exists: ' + name });
+    }
     await db.query(
       `INSERT INTO credit_customers (id,owner_id,pump_id,name,phone,credit_limit,outstanding,last_txn,status)
        VALUES ($1,$2,$3,$4,$5,$6,0,CURRENT_DATE,'Active')
@@ -284,3 +290,5 @@ router.post('/credit-customers/:id/collect', requireOwnerOrManager, async (req, 
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
+
+module.exports = router;
