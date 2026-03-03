@@ -291,4 +291,15 @@ router.post('/credit-customers/:id/collect', requireOwnerOrManager, async (req, 
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// DELETE /api/owners/credit-customers/:id
+router.delete('/credit-customers/:id', requireOwner, async (req, res) => {
+  try {
+    await ensureCreditTxnTable();
+    const ownerId = req.user.id;
+    await db.query(`DELETE FROM credit_transactions WHERE customer_id=$1 AND owner_id=$2`,[req.params.id,ownerId]);
+    await db.query(`DELETE FROM credit_customers WHERE id=$1 AND owner_id=$2`,[req.params.id,ownerId]);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 module.exports = router;
