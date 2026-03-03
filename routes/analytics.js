@@ -9,16 +9,19 @@ router.get('/sales', requireAuth, async (req, res) => {
     const ownerId = req.user.owner_id || req.user.id;
     const days  = parseInt(req.query.days  || 30);
     const pumpId = req.query.pump_id;
-    let q = `SELECT date, SUM(petrol) as petrol, SUM(diesel) as diesel,
+    let q = `SELECT pump_id, date, SUM(petrol) as petrol, SUM(diesel) as diesel,
                SUM(cng) as cng, SUM(total) as total
              FROM sales WHERE owner_id=$1
                AND date >= CURRENT_DATE - INTERVAL '${days} days'`;
     const vals = [ownerId];
     if (pumpId) { vals.push(pumpId); q += ` AND pump_id=$${vals.length}`; }
-    q += ' GROUP BY date ORDER BY date ASC';
+    q += ' GROUP BY pump_id, date ORDER BY date ASC';
     const r = await db.query(q, vals);
     res.json(r.rows.map(row => ({
-      date:    row.date,
+      pumpId:  String(row.pump_id),
+      pump_id: String(row.pump_id),
+      ownerId: ownerId,
+      date:    String(row.date||'').slice(0,10),
       petrol:  parseFloat(row.petrol  || 0),
       diesel:  parseFloat(row.diesel  || 0),
       cng:     parseFloat(row.cng     || 0),
