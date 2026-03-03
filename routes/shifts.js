@@ -185,6 +185,29 @@ router.patch('/:id/confirm', requireAuth, async (req, res) => {
        parseFloat(upi_received)||0, confirmed_by||'', req.params.id, ownerId]
     );
     res.json({ ok: true });
+
+    // Non-blocking WA notification to owner on shift confirm
+    setImmediate(async () => {
+      try {
+        const shiftRow = await db.query(
+          `SELECT sr.operator, sr.shift, sr.total_revenue, p.name as pump_name,
+                  o.whatsapp_num
+           FROM shift_reports sr
+           JOIN pumps p ON p.id = sr.pump_id
+           JOIN owners o ON o.id = sr.owner_id
+           WHERE sr.id = $1`, [req.params.id]
+        );
+        const s = shiftRow.rows[0];
+        if (!s?.whatsapp_num) return;
+        await wa.notifyShiftConfirmed(s.whatsapp_num, {
+          pumpName:    s.pump_name,
+          operator:    s.operator,
+          shift:       s.shift,
+          confirmedBy: req.body.confirmed_by || 'Manager',
+          amount:      s.total_revenue,
+        });
+      } catch (e) { console.warn('[shifts/confirm/wa]', e.message); }
+    });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

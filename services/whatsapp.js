@@ -1,4 +1,6 @@
-// services/whatsapp.js — Meta WhatsApp Cloud API sender
+// services/whatsapp.js — Meta WhatsApp Cloud API
+// Uses approved templates for outbound messages (works to any number)
+// Falls back to free-text only within 24hr conversation window
 const db = require('../db');
 
 const getWaConfig = async () => {
@@ -7,7 +9,11 @@ const getWaConfig = async () => {
       key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TIMESTAMPTZ DEFAULT NOW()
     )`).catch(() => {});
     const r = await db.query(
-      "SELECT key, value FROM app_config WHERE key IN ('wa_api_key','wa_phone_number_id','wa_number','wa_provider')"
+      `SELECT key, value FROM app_config WHERE key IN (
+        'wa_api_key','wa_phone_number_id','wa_number','wa_provider',
+        'wa_tpl_shift_submitted','wa_tpl_shift_confirmed',
+        'wa_tpl_payment_success','wa_tpl_low_stock'
+      )`
     );
     const cfg = {};
     r.rows.forEach(row => { cfg[row.key] = row.value; });
@@ -16,20 +22,75 @@ const getWaConfig = async () => {
       phoneNumberId: cfg.wa_phone_number_id || process.env.WA_PHONE_NUMBER_ID || '',
       fromNumber:    cfg.wa_number          || process.env.WA_NUMBER          || '',
       provider:      cfg.wa_provider        || 'meta',
+      // Template names saved by admin (default to standard names)
+      tplShiftSubmitted:  cfg.wa_tpl_shift_submitted  || 'fuelos_shift_submitted',
+      tplShiftConfirmed:  cfg.wa_tpl_shift_confirmed  || 'fuelos_shift_confirmed',
+      tplPaymentSuccess:  cfg.wa_tpl_payment_success  || 'fuelos_payment_success',
+      tplLowStock:        cfg.wa_tpl_low_stock        || 'fuelos_low_stock_alert',
     };
   } catch {
     return { apiKey: '', phoneNumberId: '', fromNumber: '', provider: 'meta' };
   }
 };
 
-// Send a text message via Meta Cloud API
+// Normalise phone → E.164 digits only
+const normalisePhone = (num) => {
+  let n = String(num || '').replace(/\D/g, '');
+  if (n.length === 10) n = '91' + n;
+  return n;
+};
+
+// Low-level: send a template message
+const sendTemplate = async (toNumber, templateName, langCode, components) => {
+  const { apiKey, phoneNumberId } = await getWaConfig();
+  if (!apiKey || !phoneNumberId) {
+    return { ok: false, error: 'WhatsApp not configured' };
+  }
+  const to = normalisePhone(toNumber);
+  if (to.length < 11) return { ok: false, error: 'Invalid number: ' + toNumber };
+
+  const payload = {
+    messaging_product: 'whatsapp',
+    recipient_type: 'individual',
+    to,
+    type: 'template',
+    template: {
+      name: templateName,
+      language: { code: langCode || 'en_US' },
+      ...(components && components.length > 0 ? { components } : {}),
+    },
+  };
+
+  console.log(`[WhatsApp] Template "${templateName}" → ${to}`);
+  try {
+    const res = await fetch(`https://graph.facebook.com/v19.0/${phoneNumberId}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      const errMsg  = data?.error?.message || 'Unknown error';
+      const errCode = data?.error?.code;
+      const detail  = data?.error?.error_data?.details || '';
+      console.error('[WhatsApp] Template failed:', errCode, errMsg, detail);
+      return { ok: false, error: `(#${errCode}) ${errMsg}${detail ? ' — ' + detail : ''}`, code: errCode };
+    }
+    return { ok: true, messageId: data?.messages?.[0]?.id };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+};
+
+// Low-level: send a free-text message (only works within 24hr conversation window)
 const sendText = async (toNumber, message) => {
   const { apiKey, phoneNumberId } = await getWaConfig();
   if (!apiKey || !phoneNumberId) {
-    return { ok: false, error: 'WhatsApp not configured — missing API key or Phone Number ID' };
+    return { ok: false, error: 'WhatsApp not configured' };
   }
-  const to = String(toNumber).replace(/\D/g, '');
-  if (to.length < 10) return { ok: false, error: 'Invalid number: ' + toNumber };
+  const to = normalisePhone(toNumber);
+  if (to.length < 11) return { ok: false, error: 'Invalid number: ' + toNumber };
+  console.log(`[WhatsApp] Text → ${to}`);
   try {
     const res = await fetch(`https://graph.facebook.com/v19.0/${phoneNumberId}/messages`, {
       method: 'POST',
@@ -44,48 +105,92 @@ const sendText = async (toNumber, message) => {
     });
     const data = await res.json();
     if (!res.ok) {
-      const errMsg = data?.error?.message || JSON.stringify(data);
-      console.error('[WhatsApp] Send failed:', errMsg);
-      return { ok: false, error: errMsg, code: data?.error?.code };
+      const errMsg  = data?.error?.message || 'Unknown error';
+      const errCode = data?.error?.code;
+      const detail  = data?.error?.error_data?.details || '';
+      return { ok: false, error: `(#${errCode}) ${errMsg}${detail ? ' — ' + detail : ''}`, code: errCode };
     }
-    const messageId = data?.messages?.[0]?.id;
-    console.log(`[WhatsApp] ✓ Sent to ${to} — id: ${messageId}`);
-    return { ok: true, messageId };
+    return { ok: true, messageId: data?.messages?.[0]?.id };
   } catch (e) {
     return { ok: false, error: e.message };
   }
 };
 
-// Test connection — verifies API key + phone number ID work
+// ── Helpers to build template body components
+const bodyParams = (...texts) => ([{
+  type: 'body',
+  parameters: texts.map(t => ({ type: 'text', text: String(t ?? '') })),
+}]);
+
+// ── Test connection
 const testConnection = async (toNumber) => {
   const cfg = await getWaConfig();
-  if (!cfg.apiKey)        return { ok: false, step: 'config', error: 'No API key saved. Save credentials in Admin → Integrations → WhatsApp first.' };
+  if (!cfg.apiKey)        return { ok: false, step: 'config', error: 'No API key saved.' };
   if (!cfg.phoneNumberId) return { ok: false, step: 'config', error: 'No Phone Number ID saved.' };
   const target = toNumber || cfg.fromNumber;
-  if (!target) return { ok: false, step: 'config', error: 'Provide a test number or save your Business Phone Number.' };
-  return sendText(target, `✅ *FuelOS WhatsApp Connected!*\n\nYour integration is working.\nSent: ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}`);
+  if (!target) return { ok: false, step: 'config', error: 'Provide a test number.' };
+  // Try free-text for test (works within 24hr window / test number)
+  return sendText(target,
+    `✅ *FuelOS WhatsApp Connected!*\n\nYour integration is working correctly.\nSent: ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}`
+  );
 };
 
-// Notify owner when operator submits a shift
+// ── Notify owner when shift submitted
+// Template: fuelos_shift_submitted
+// Params: {{1}}=pumpName {{2}}=operator {{3}}=shift {{4}}=date
+//         {{5}}=totalRevenue {{6}}=cash {{7}}=upi {{8}}=card
 const notifyShiftSubmitted = async (ownerPhone, data) => {
   if (!ownerPhone) return { ok: false, error: 'No owner phone' };
-  const { operator, shift, pumpName, date, totalRevenue, cash, upi, card, petrolVol, dieselVol } = data;
-  const fmt  = n => '₹' + Number(n||0).toLocaleString('en-IN');
-  const fmtL = n => Number(n||0).toFixed(1) + 'L';
-  const lines = [
-    `📋 *Shift Submitted — ${pumpName || 'Pump'}*`,
-    ``,
-    `👤 Operator: *${operator}*`,
-    `⏰ Shift: *${shift}* · ${date}`,
-    ``,
-    `💰 *Revenue: ${fmt(totalRevenue)}*`,
-    `Cash: ${fmt(cash)}  UPI: ${fmt(upi)}  Card: ${fmt(card)}`,
-    petrolVol > 0 ? `⛽ Petrol sold: ${fmtL(petrolVol)}` : null,
-    dieselVol > 0 ? `🛢 Diesel sold: ${fmtL(dieselVol)}` : null,
-    ``,
-    `_Open FuelOS to confirm this shift._`,
-  ].filter(l => l !== null).join('\n');
-  return sendText(ownerPhone, lines);
+  const cfg = await getWaConfig();
+  const { pumpName, operator, shift, date, totalRevenue, cash, upi, card } = data;
+  const r = n => String(Number(n||0).toLocaleString('en-IN'));
+  return sendTemplate(ownerPhone, cfg.tplShiftSubmitted, 'en_US',
+    bodyParams(pumpName||'Pump', operator||'', shift||'', date||'',
+               r(totalRevenue), r(cash), r(upi), r(card))
+  );
 };
 
-module.exports = { sendText, testConnection, notifyShiftSubmitted, getWaConfig };
+// ── Notify owner when manager confirms a shift
+// Template: fuelos_shift_confirmed
+// Params: {{1}}=pumpName {{2}}=operator {{3}}=shift {{4}}=confirmedBy {{5}}=amount
+const notifyShiftConfirmed = async (ownerPhone, data) => {
+  if (!ownerPhone) return { ok: false, error: 'No owner phone' };
+  const cfg = await getWaConfig();
+  const { pumpName, operator, shift, confirmedBy, amount } = data;
+  const r = n => String(Number(n||0).toLocaleString('en-IN'));
+  return sendTemplate(ownerPhone, cfg.tplShiftConfirmed, 'en_US',
+    bodyParams(pumpName||'Pump', operator||'', shift||'', confirmedBy||'Manager', r(amount))
+  );
+};
+
+// ── Notify owner after successful plan payment
+// Template: fuelos_payment_success
+// Params: {{1}}=plan {{2}}=billing {{3}}=amount {{4}}=validTill
+const notifyPaymentSuccess = async (ownerPhone, data) => {
+  if (!ownerPhone) return { ok: false, error: 'No owner phone' };
+  const cfg = await getWaConfig();
+  const { plan, billing, amount, validTill } = data;
+  const r = n => String(Number(n||0).toLocaleString('en-IN'));
+  return sendTemplate(ownerPhone, cfg.tplPaymentSuccess, 'en_US',
+    bodyParams(plan||'', billing||'Monthly', r(amount), validTill||'')
+  );
+};
+
+// ── Low stock alert
+// Template: fuelos_low_stock_alert
+// Params: {{1}}=pumpName {{2}}=tankName {{3}}=currentStock {{4}}=threshold
+const notifyLowStock = async (ownerPhone, data) => {
+  if (!ownerPhone) return { ok: false, error: 'No owner phone' };
+  const cfg = await getWaConfig();
+  const { pumpName, tankName, currentStock, threshold } = data;
+  return sendTemplate(ownerPhone, cfg.tplLowStock, 'en_US',
+    bodyParams(pumpName||'Pump', tankName||'Tank',
+               String(currentStock||0), String(threshold||0))
+  );
+};
+
+module.exports = {
+  sendText, sendTemplate, testConnection, getWaConfig,
+  notifyShiftSubmitted, notifyShiftConfirmed,
+  notifyPaymentSuccess, notifyLowStock,
+};

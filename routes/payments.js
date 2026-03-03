@@ -1,3 +1,4 @@
+const wa = require('../services/whatsapp');
 // routes/payments.js
 const router  = require('express').Router();
 const db      = require('../db');
@@ -162,6 +163,26 @@ router.post('/verify', requireAuth, async (req, res) => {
     }
 
     res.json({ ok: true, verified: true });
+
+    // Non-blocking WA notification to owner
+    setImmediate(async () => {
+      try {
+        if (!orderPlan) return;
+        const ownerRow = await db.query(
+          'SELECT whatsapp_num, end_date FROM owners WHERE id=$1', [ownerId]
+        );
+        const o = ownerRow.rows[0];
+        if (!o?.whatsapp_num) return;
+        const PRICES = { Starter:{monthly:799,yearly:7990}, Pro:{monthly:2499,yearly:24990}, Enterprise:{monthly:5999,yearly:59990} };
+        const b = (PRICES[orderPlan]||{})[orderBilling||'monthly'] || 0;
+        await wa.notifyPaymentSuccess(o.whatsapp_num, {
+          plan:      orderPlan,
+          billing:   orderBilling === 'yearly' ? 'Annual' : 'Monthly',
+          amount:    b + Math.round(b * 0.18),
+          validTill: o.end_date ? new Date(o.end_date).toLocaleDateString('en-IN') : '',
+        });
+      } catch (e) { console.warn('[payments/verify/wa]', e.message); }
+    });
   } catch (e) {
     console.error('[payments/verify]', e);
     res.status(500).json({ error: e.message });
