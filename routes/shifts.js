@@ -280,4 +280,72 @@ router.get('/my-nozzles', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ─── Attendance ───────────────────────────────────────────────────────────────
+
+// Auto-create attendance table
+const ensureAttendanceTable = async () => {
+  await db.query(`CREATE TABLE IF NOT EXISTS daily_attendance (
+    id           SERIAL PRIMARY KEY,
+    owner_id     UUID NOT NULL,
+    pump_id      TEXT NOT NULL,
+    operator_id  UUID NOT NULL,
+    date         DATE NOT NULL,
+    status       TEXT NOT NULL DEFAULT 'present',
+    shift        TEXT,
+    note         TEXT,
+    marked_by    TEXT,
+    created_at   TIMESTAMPTZ DEFAULT NOW(),
+    updated_at   TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(operator_id, date, shift)
+  )`);
+};
+
+// POST /api/shifts/attendance  — save/update attendance for a day
+router.post('/attendance', requireAuth, async (req, res) => {
+  try {
+    await ensureAttendanceTable();
+    const ownerId = req.user.owner_id || req.user.id;
+    const { records } = req.body;
+    // records = [{ operator_id, pump_id, date, shift, status, note }]
+    if (!Array.isArray(records) || records.length === 0)
+      return res.status(400).json({ error: 'records array required' });
+    for (const rec of records) {
+      await db.query(
+        `INSERT INTO daily_attendance (owner_id,pump_id,operator_id,date,shift,status,note,marked_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+         ON CONFLICT (operator_id,date,shift)
+         DO UPDATE SET status=$6, note=$7, marked_by=$8, updated_at=NOW()`,
+        [ownerId, rec.pump_id, rec.operator_id, rec.date, rec.shift||'All',
+         rec.status||'present', rec.note||null, req.user.email||req.user.name||null]
+      );
+    }
+    res.json({ ok: true, saved: records.length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/shifts/attendance?pump_id=&date=&month=YYYY-MM  — load attendance records
+router.get('/attendance', requireAuth, async (req, res) => {
+  try {
+    await ensureAttendanceTable();
+    const ownerId = req.user.owner_id || req.user.id;
+    const { pump_id, date, month } = req.query;
+    const where = ['owner_id=$1'];
+    const vals  = [ownerId];
+    if (pump_id) { vals.push(pump_id); where.push(`pump_id=$${vals.length}`); }
+    if (date)    { vals.push(date);    where.push(`date=$${vals.length}`); }
+    if (month)   { vals.push(month + '-01'); vals.push(month + '-31');
+                   where.push(`date >= $${vals.length-1} AND date <= $${vals.length}`); }
+    const r = await db.query(
+      `SELECT * FROM daily_attendance WHERE ${where.join(' AND ')} ORDER BY date DESC, operator_id`,
+      vals
+    );
+    res.json(r.rows.map(a => ({
+      id: a.id, operatorId: String(a.operator_id), pumpId: String(a.pump_id),
+      date: String(a.date).slice(0,10), shift: a.shift, status: a.status,
+      note: a.note, markedBy: a.marked_by, createdAt: a.created_at,
+    })));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+
 module.exports = router;
