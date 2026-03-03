@@ -292,13 +292,50 @@ router.get('/whatsapp-log', requireAdmin, async (req, res) => {
 // POST /api/admin/test-whatsapp — send a real test message to verify integration
 router.post('/test-whatsapp', requireAdmin, async (req, res) => {
   try {
-    const { to } = req.body; // optional override number
+    const { to } = req.body;
+    // First show what config is loaded so admin can debug
+    const cfg = await wa.getWaConfig();
+    const configSummary = {
+      hasApiKey:       !!cfg.apiKey,
+      apiKeyPrefix:    cfg.apiKey ? cfg.apiKey.substring(0, 10) + '...' : '(none)',
+      phoneNumberId:   cfg.phoneNumberId || '(none)',
+      fromNumber:      cfg.fromNumber    || '(none)',
+      sendingTo:       to || cfg.fromNumber || '(none)',
+    };
+    console.log('[test-whatsapp] config:', configSummary);
+
     const result = await wa.testConnection(to || '');
     if (result.ok) {
-      res.json({ ok: true, messageId: result.messageId, message: 'Test message sent successfully!' });
+      res.json({ ok: true, messageId: result.messageId, config: configSummary });
     } else {
-      res.status(400).json({ ok: false, error: result.error, step: result.step });
+      res.status(400).json({ ok: false, error: result.error, step: result.step, config: configSummary });
     }
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// POST /api/admin/test-shift-notify — test the full shift notification to a specific owner
+router.post('/test-shift-notify', requireAdmin, async (req, res) => {
+  try {
+    const { owner_id, to } = req.body;
+    const wa = require('../services/whatsapp');
+
+    // Get owner phone if owner_id provided
+    let phone = to;
+    if (!phone && owner_id) {
+      const r = await db.query('SELECT whatsapp_num, name FROM owners WHERE id=$1', [owner_id]);
+      phone = r.rows[0]?.whatsapp_num;
+    }
+    if (!phone) return res.status(400).json({ ok: false, error: 'No phone number. Provide to or owner_id with whatsapp_num set.' });
+
+    const result = await wa.notifyShiftSubmitted(phone, {
+      pumpName: 'Test Pump', operator: 'Test Operator',
+      shift: 'Morning', date: new Date().toISOString().slice(0,10),
+      totalRevenue: 12450, cash: 8200, upi: 3100, card: 1150,
+      petrolVol: 120, dieselVol: 85,
+    });
+    res.json({ ok: result.ok, error: result.error, messageId: result.messageId, phone });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }

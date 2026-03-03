@@ -132,7 +132,12 @@ router.post('/', requireAuth, async (req, res) => {
           'SELECT whatsapp_num, name FROM owners WHERE id=$1', [ownerId]
         );
         const ownerPhone = ownerRow.rows[0]?.whatsapp_num;
-        if (!ownerPhone) return; // owner hasn't set WA number — skip silently
+        const waEnabled  = ownerRow.rows[0]?.whatsapp;
+        console.log('[shifts/wa-notify] owner:', ownerId, 'phone:', ownerPhone||'(none)', 'enabled:', waEnabled);
+        if (!ownerPhone) {
+          console.warn('[shifts/wa-notify] No whatsapp_num set for owner', ownerId, '— skipping');
+          return;
+        }
 
         // Get pump name
         const pumpRow = await db.query('SELECT name FROM pumps WHERE id=$1', [s.pumpId||s.pump_id]);
@@ -151,7 +156,7 @@ router.post('/', requireAuth, async (req, res) => {
           dieselVol:    s.dieselVol||s.diesel_vol||0,
         });
       } catch (e) {
-        console.warn('[shifts/wa-notify]', e.message);
+        console.error('[shifts/wa-notify] ERROR:', e.message, e.stack?.split('\n')[1]);
       }
     });
   } catch (e) {
