@@ -199,10 +199,12 @@ router.get('/history', requireAuth, async (req, res) => {
     );
     res.json(r.rows.map(t => ({
       id: t.id, plan: t.plan, billing: t.billing,
+      ownerId: String(t.owner_id), owner_id: String(t.owner_id),
       amount: parseFloat(t.amount||0), base: parseFloat(t.base||0),
       gst: parseFloat(t.gst||0), credit: parseFloat(t.credit||0),
-      date: t.date, method: t.method, status: t.status,
+      date: String(t.date||'').slice(0,10), method: t.method, status: t.status,
       razorId: t.razor_id, planActivated: t.plan_activated,
+      created_at: t.created_at,
     })));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
