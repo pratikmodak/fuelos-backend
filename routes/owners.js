@@ -168,3 +168,106 @@ router.patch('/managers/:id', requireOwner, async (req, res) => {
 });
 
 module.exports = router;
+
+// ─── Credit Customers ─────────────────────────────────────
+// Auto-create credit_transactions table
+const ensureCreditTxnTable = async () => {
+  await db.query(`CREATE TABLE IF NOT EXISTS credit_transactions (
+    id           TEXT PRIMARY KEY,
+    owner_id     UUID REFERENCES owners(id) ON DELETE CASCADE,
+    customer_id  TEXT REFERENCES credit_customers(id) ON DELETE CASCADE,
+    pump_id      TEXT,
+    date         DATE NOT NULL DEFAULT CURRENT_DATE,
+    fuel         TEXT,
+    qty          NUMERIC(10,3) DEFAULT 0,
+    rate         NUMERIC(10,2) DEFAULT 0,
+    amount       NUMERIC(10,2) NOT NULL,
+    type         TEXT DEFAULT 'purchase',
+    note         TEXT,
+    created_at   TIMESTAMPTZ DEFAULT NOW()
+  )`);
+};
+
+// GET /api/owners/credit-customers
+router.get('/credit-customers', requireOwner, async (req, res) => {
+  try {
+    const ownerId = req.user.owner_id || req.user.id;
+    const r = await db.query(
+      `SELECT * FROM credit_customers WHERE owner_id=$1 ORDER BY name`, [ownerId]
+    );
+    res.json(r.rows.map(c => ({
+      id: c.id, ownerId: c.owner_id, pumpId: String(c.pump_id||''),
+      name: c.name, phone: c.phone||'', limit: parseFloat(c.credit_limit||0),
+      outstanding: parseFloat(c.outstanding||0), lastTxn: c.last_txn, status: c.status,
+    })));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/owners/credit-customers
+router.post('/credit-customers', requireOwner, async (req, res) => {
+  try {
+    const ownerId = req.user.owner_id || req.user.id;
+    const { id, name, phone, pumpId, limit } = req.body;
+    await db.query(
+      `INSERT INTO credit_customers (id,owner_id,pump_id,name,phone,credit_limit,outstanding,last_txn,status)
+       VALUES ($1,$2,$3,$4,$5,$6,0,CURRENT_DATE,'Active')
+       ON CONFLICT (id) DO NOTHING`,
+      [id, ownerId, pumpId||null, name, phone||null, limit||0]
+    );
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/owners/credit-customers/:id/transactions
+router.get('/credit-customers/:id/transactions', requireOwner, async (req, res) => {
+  try {
+    await ensureCreditTxnTable();
+    const r = await db.query(
+      `SELECT * FROM credit_transactions WHERE customer_id=$1 ORDER BY date DESC, created_at DESC LIMIT 100`,
+      [req.params.id]
+    );
+    res.json(r.rows.map(t => ({
+      id: t.id, date: String(t.date||'').slice(0,10), fuel: t.fuel,
+      qty: parseFloat(t.qty||0), rate: parseFloat(t.rate||0),
+      amount: parseFloat(t.amount||0), type: t.type, note: t.note,
+    })));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/owners/credit-customers/:id/purchase  (add fuel purchase on credit)
+router.post('/credit-customers/:id/purchase', requireOwner, async (req, res) => {
+  try {
+    await ensureCreditTxnTable();
+    const ownerId = req.user.owner_id || req.user.id;
+    const { id: txnId, date, fuel, qty, rate, amount, note } = req.body;
+    await db.query(
+      `INSERT INTO credit_transactions (id,owner_id,customer_id,date,fuel,qty,rate,amount,type,note)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'purchase',$9)`,
+      [txnId, ownerId, req.params.id, date||new Date().toISOString().slice(0,10), fuel, qty||0, rate||0, amount, note||null]
+    );
+    await db.query(
+      `UPDATE credit_customers SET outstanding=outstanding+$1, last_txn=$2, updated_at=NOW() WHERE id=$3`,
+      [amount, date||new Date().toISOString().slice(0,10), req.params.id]
+    );
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/owners/credit-customers/:id/collect  (record payment collection)
+router.post('/credit-customers/:id/collect', requireOwner, async (req, res) => {
+  try {
+    await ensureCreditTxnTable();
+    const ownerId = req.user.owner_id || req.user.id;
+    const { id: txnId, amount, note } = req.body;
+    await db.query(
+      `INSERT INTO credit_transactions (id,owner_id,customer_id,date,amount,type,note)
+       VALUES ($1,$2,$3,CURRENT_DATE,$4,'payment',$5)`,
+      [txnId, ownerId, req.params.id, amount, note||null]
+    );
+    await db.query(
+      `UPDATE credit_customers SET outstanding=GREATEST(0,outstanding-$1), last_txn=CURRENT_DATE, updated_at=NOW() WHERE id=$2`,
+      [amount, req.params.id]
+    );
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
