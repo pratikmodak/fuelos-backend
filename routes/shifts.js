@@ -19,7 +19,7 @@ router.get('/', requireAuth, async (req, res) => {
     res.json(r.rows.map(s => ({
       ...s, id: String(s.id),
       ownerId: String(s.owner_id), owner_id: String(s.owner_id),
-      pumpId: s.pump_id, operatorId: String(s.operator_id||''),
+      pumpId: String(s.pump_id||''), pump_id: String(s.pump_id||''), operatorId: String(s.operator_id||''),
       nozzleReadings: s.nozzle_readings || [],
       totalRevenue: parseFloat(s.total_revenue||0),
       petrolVol:    parseFloat(s.petrol_vol||0),
