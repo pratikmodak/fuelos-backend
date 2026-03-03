@@ -153,4 +153,18 @@ router.delete('/operators/:id', requireOwner, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// PATCH /api/owners/managers/:id
+router.patch('/managers/:id', requireOwner, async (req, res) => {
+  try {
+    const { name, email, phone, shift, pump_id, salary, status } = req.body;
+    await db.query(
+      `UPDATE managers SET name=COALESCE($1,name),email=COALESCE($2,email),phone=COALESCE($3,phone),
+       shift=COALESCE($4,shift),pump_id=COALESCE($5,pump_id),salary=COALESCE($6,salary),
+       status=COALESCE($7,status),updated_at=NOW() WHERE id=$8 AND owner_id=$9`,
+      [name,email,phone,shift,pump_id,salary,status,req.params.id,req.user.owner_id]
+    );
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 module.exports = router;
