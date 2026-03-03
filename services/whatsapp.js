@@ -76,7 +76,9 @@ const sendTemplate = async (toNumber, templateName, langCode, components) => {
       console.error('[WhatsApp] Template failed:', errCode, errMsg, detail);
       return { ok: false, error: `(#${errCode}) ${errMsg}${detail ? ' — ' + detail : ''}`, code: errCode };
     }
-    return { ok: true, messageId: data?.messages?.[0]?.id };
+    const mid = data?.messages?.[0]?.id;
+    console.log(`[WhatsApp] ✓ Template sent to ${to} — id: ${mid}`);
+    return { ok: true, messageId: mid };
   } catch (e) {
     return { ok: false, error: e.message };
   }
@@ -110,7 +112,9 @@ const sendText = async (toNumber, message) => {
       const detail  = data?.error?.error_data?.details || '';
       return { ok: false, error: `(#${errCode}) ${errMsg}${detail ? ' — ' + detail : ''}`, code: errCode };
     }
-    return { ok: true, messageId: data?.messages?.[0]?.id };
+    const mid = data?.messages?.[0]?.id;
+    console.log(`[WhatsApp] ✓ Text sent to ${to} — id: ${mid}`);
+    return { ok: true, messageId: mid };
   } catch (e) {
     return { ok: false, error: e.message };
   }
@@ -136,18 +140,31 @@ const testConnection = async (toNumber) => {
 };
 
 // ── Notify owner when shift submitted
-// Template: fuelos_shift_submitted
-// Params: {{1}}=pumpName {{2}}=operator {{3}}=shift {{4}}=date
-//         {{5}}=totalRevenue {{6}}=cash {{7}}=upi {{8}}=card
+// Tries approved template first, falls back to free-text if template not approved yet
 const notifyShiftSubmitted = async (ownerPhone, data) => {
   if (!ownerPhone) return { ok: false, error: 'No owner phone' };
   const cfg = await getWaConfig();
   const { pumpName, operator, shift, date, totalRevenue, cash, upi, card } = data;
   const r = n => String(Number(n||0).toLocaleString('en-IN'));
-  return sendTemplate(ownerPhone, cfg.tplShiftSubmitted, 'en_US',
+
+  // Try template first (works to any number at any time once approved)
+  const tplResult = await sendTemplate(ownerPhone, cfg.tplShiftSubmitted, 'en_US',
     bodyParams(pumpName||'Pump', operator||'', shift||'', date||'',
                r(totalRevenue), r(cash), r(upi), r(card))
   );
+
+  if (tplResult.ok) return tplResult;
+
+  // Template failed (not approved yet or wrong name) — fall back to free-text
+  console.warn('[WhatsApp] Template failed, trying free-text:', tplResult.error);
+  const msg = [
+    `Shift submitted at ${pumpName||'Pump'}`,
+    `Operator: ${operator} | Shift: ${shift} | Date: ${date}`,
+    `Revenue: Rs.${r(totalRevenue)}`,
+    `Cash: Rs.${r(cash)} | UPI: Rs.${r(upi)} | Card: Rs.${r(card)}`,
+    `Login to FuelOS to confirm.`,
+  ].join('\n');
+  return sendText(ownerPhone, msg);
 };
 
 // ── Notify owner when manager confirms a shift

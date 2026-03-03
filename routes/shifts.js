@@ -129,13 +129,12 @@ router.post('/', requireAuth, async (req, res) => {
       try {
         // Get owner's WhatsApp number
         const ownerRow = await db.query(
-          'SELECT whatsapp_num, name FROM owners WHERE id=$1', [ownerId]
+          'SELECT whatsapp_num, whatsapp, name FROM owners WHERE id=$1', [ownerId]
         );
         const ownerPhone = ownerRow.rows[0]?.whatsapp_num;
-        const waEnabled  = ownerRow.rows[0]?.whatsapp;
-        console.log('[shifts/wa-notify] owner:', ownerId, 'phone:', ownerPhone||'(none)', 'enabled:', waEnabled);
+        console.log('[shifts/wa-notify] owner:', ownerId, 'phone:', ownerPhone||'(none)');
         if (!ownerPhone) {
-          console.warn('[shifts/wa-notify] No whatsapp_num set for owner', ownerId, '— skipping');
+          console.log('[shifts/wa-notify] No whatsapp_num for owner', ownerId, '— skipping');
           return;
         }
 
