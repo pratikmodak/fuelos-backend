@@ -444,4 +444,53 @@ router.post('/remind/:userId', requireAdmin, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── STAFF MANAGEMENT ─────────────────────────────────────────────
+// GET /api/superadmin/owners/:ownerId/staff
+router.get('/owners/:ownerId/staff', requireAdmin, async (req, res) => {
+  try {
+    const { ownerId } = req.params;
+    const [mgrs, ops] = await Promise.all([
+      db.query('SELECT id,owner_id,name,email,phone,pump_id,shift,salary,status,created_at FROM managers WHERE owner_id=$1 ORDER BY name', [ownerId]),
+      db.query('SELECT id,owner_id,name,email,phone,pump_id,shift,salary,status,created_at FROM operators WHERE owner_id=$1 ORDER BY name', [ownerId]),
+    ]);
+    res.json({
+      managers:  mgrs.rows.map(m => ({ ...m, role: 'manager' })),
+      operators: ops.rows.map(o => ({ ...o, role: 'operator' })),
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// PATCH /api/superadmin/staff/:role/:id — edit manager or operator
+router.patch('/staff/:role/:id', requireAdmin, async (req, res) => {
+  try {
+    const { role, id } = req.params;
+    const table = role === 'manager' ? 'managers' : 'operators';
+    const allowed = ['name', 'email', 'phone', 'shift', 'salary', 'status', 'pump_id'];
+    const sets = [], vals = [];
+    allowed.forEach(k => {
+      if (req.body[k] !== undefined) { vals.push(req.body[k]); sets.push(`${k}=$${vals.length}`); }
+    });
+    if (!sets.length) return res.json({ ok: true });
+    // Also update password if provided
+    if (req.body.password) {
+      const bcrypt = require('bcryptjs');
+      const hash = await bcrypt.hash(req.body.password, 10);
+      vals.push(hash); sets.push(`password=$${vals.length}`);
+    }
+    vals.push(id);
+    await db.query(`UPDATE ${table} SET ${sets.join(',')} WHERE id=$${vals.length}`, vals);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// DELETE /api/superadmin/staff/:role/:id
+router.delete('/staff/:role/:id', requireAdmin, async (req, res) => {
+  try {
+    const { role, id } = req.params;
+    const table = role === 'manager' ? 'managers' : 'operators';
+    await db.query(`DELETE FROM ${table} WHERE id=$1`, [id]);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 module.exports = router;
