@@ -167,6 +167,7 @@ router.patch('/managers/:id', requireOwner, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+module.exports = router;
 
 // ─── Credit Customers ─────────────────────────────────────
 // Auto-create credit_transactions table
@@ -204,8 +205,13 @@ const ensureCreditTxnTable = async () => {
 router.get('/credit-customers', requireOwnerOrManager, async (req, res) => {
   try {
     const ownerId = req.user.owner_id || req.user.id;
+    // Managers only see their own pump's customers; owners see all
+    const pumpId = req.user.role === 'manager' ? req.user.pump_id : null;
     const r = await db.query(
-      `SELECT * FROM credit_customers WHERE owner_id=$1 ORDER BY name`, [ownerId]
+      pumpId
+        ? `SELECT * FROM credit_customers WHERE owner_id=$1 AND (pump_id=$2 OR pump_id IS NULL OR pump_id='') ORDER BY name`
+        : `SELECT * FROM credit_customers WHERE owner_id=$1 ORDER BY name`,
+      pumpId ? [ownerId, pumpId] : [ownerId]
     );
     res.json(r.rows.map(c => ({
       id: c.id, ownerId: c.owner_id, pumpId: String(c.pump_id||''),
@@ -220,13 +226,6 @@ router.post('/credit-customers', requireOwnerOrManager, async (req, res) => {
   try {
     const ownerId = req.user.owner_id || req.user.id;
     const { id, name, phone, pumpId, limit } = req.body;
-    const dup = await db.query(
-      `SELECT id FROM credit_customers WHERE owner_id=$1 AND LOWER(TRIM(name))=LOWER(TRIM($2))`,
-      [ownerId, name]
-    );
-    if (dup.rows.length > 0) {
-      return res.status(409).json({ error: 'Customer already exists: ' + name });
-    }
     await db.query(
       `INSERT INTO credit_customers (id,owner_id,pump_id,name,phone,credit_limit,outstanding,last_txn,status)
        VALUES ($1,$2,$3,$4,$5,$6,0,CURRENT_DATE,'Active')
@@ -290,16 +289,3 @@ router.post('/credit-customers/:id/collect', requireOwnerOrManager, async (req, 
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
-
-// DELETE /api/owners/credit-customers/:id
-router.delete('/credit-customers/:id', requireOwner, async (req, res) => {
-  try {
-    await ensureCreditTxnTable();
-    const ownerId = req.user.id;
-    await db.query(`DELETE FROM credit_transactions WHERE customer_id=$1 AND owner_id=$2`,[req.params.id,ownerId]);
-    await db.query(`DELETE FROM credit_customers WHERE id=$1 AND owner_id=$2`,[req.params.id,ownerId]);
-    res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-module.exports = router;
