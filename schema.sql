@@ -79,7 +79,7 @@ CREATE TABLE IF NOT EXISTS pumps (
 -- NOZZLES
 -- ─────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS nozzles (
-  id           TEXT PRIMARY KEY,
+  id           TEXT NOT NULL,
   pump_id      TEXT NOT NULL REFERENCES pumps(id) ON DELETE CASCADE,
   owner_id     UUID NOT NULL REFERENCES owners(id) ON DELETE CASCADE,
   fuel         TEXT NOT NULL CHECK (fuel IN ('Petrol','Diesel','CNG','SpeedPetrol','SpeedDiesel')),
@@ -87,7 +87,8 @@ CREATE TABLE IF NOT EXISTS nozzles (
   operator     TEXT,
   open         NUMERIC(12,2) DEFAULT 0,
   close        NUMERIC(12,2) DEFAULT 0,
-  created_at   TIMESTAMPTZ DEFAULT NOW()
+  created_at   TIMESTAMPTZ DEFAULT NOW(),
+  PRIMARY KEY  (id, pump_id)
 );
 
 -- ─────────────────────────────────────────────
@@ -150,8 +151,13 @@ CREATE TABLE IF NOT EXISTS shift_reports (
   diesel_vol   NUMERIC(10,2) DEFAULT 0,
   cng_vol      NUMERIC(10,2) DEFAULT 0,
   status       TEXT DEFAULT 'Submitted',
-  note         TEXT,
-  created_at   TIMESTAMPTZ DEFAULT NOW()
+  note              TEXT,
+  cash_received     NUMERIC(10,2) DEFAULT 0,
+  card_received     NUMERIC(10,2) DEFAULT 0,
+  upi_received      NUMERIC(10,2) DEFAULT 0,
+  confirmed_by      TEXT,
+  confirmed_at      TIMESTAMPTZ,
+  created_at        TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- ─────────────────────────────────────────────
@@ -171,6 +177,8 @@ CREATE TABLE IF NOT EXISTS nozzle_readings (
   volume       NUMERIC(10,2) DEFAULT 0,
   rate         NUMERIC(8,2) DEFAULT 0,
   revenue      NUMERIC(10,2) DEFAULT 0,
+  shift_index  INTEGER DEFAULT 0,
+  status       TEXT DEFAULT 'Submitted',
   created_at   TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -238,8 +246,13 @@ CREATE TABLE IF NOT EXISTS machine_tests (
   date         DATE NOT NULL,
   fuel         TEXT,
   result       TEXT CHECK (result IN ('Pass','Fail')),
-  note         TEXT,
-  created_at   TIMESTAMPTZ DEFAULT NOW()
+  note              TEXT,
+  cash_received     NUMERIC(10,2) DEFAULT 0,
+  card_received     NUMERIC(10,2) DEFAULT 0,
+  upi_received      NUMERIC(10,2) DEFAULT 0,
+  confirmed_by      TEXT,
+  confirmed_at      TIMESTAMPTZ,
+  created_at        TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- ─────────────────────────────────────────────
@@ -356,3 +369,29 @@ CREATE TABLE IF NOT EXISTS owner_notifications (
   created_at  TIMESTAMPTZ DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_notifs_owner ON owner_notifications(owner_id, created_at DESC);
+
+-- ── Daily Nozzle Assignments (manager assigns nozzles to operators per shift/day)
+CREATE TABLE IF NOT EXISTS daily_nozzle_assignments (
+  id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  owner_id     UUID NOT NULL REFERENCES owners(id) ON DELETE CASCADE,
+  pump_id      TEXT NOT NULL REFERENCES pumps(id) ON DELETE CASCADE,
+  operator_id  TEXT NOT NULL,
+  date         DATE NOT NULL DEFAULT CURRENT_DATE,
+  shift        TEXT NOT NULL DEFAULT 'Morning',
+  nozzle_ids   TEXT NOT NULL DEFAULT '', -- comma-separated nozzle IDs
+  assigned_by  TEXT,                     -- manager email
+  created_at   TIMESTAMPTZ DEFAULT NOW(),
+  updated_at   TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE (pump_id, operator_id, date, shift)
+);
+CREATE INDEX IF NOT EXISTS idx_dna_pump_date ON daily_nozzle_assignments(pump_id, date);
+CREATE INDEX IF NOT EXISTS idx_dna_operator  ON daily_nozzle_assignments(operator_id, date);
+
+-- ─────────────────────────────────────────────
+-- APP CONFIG (integration keys, persisted in DB)
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS app_config (
+  key        TEXT PRIMARY KEY,
+  value      TEXT NOT NULL,
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);

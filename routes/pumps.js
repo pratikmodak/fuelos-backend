@@ -62,7 +62,7 @@ router.post('/:id/nozzles', requireAuth, async (req, res) => {
     await db.query(
       `INSERT INTO nozzles (id,pump_id,owner_id,fuel,status,operator,open,close)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$7)
-       ON CONFLICT (id) DO UPDATE SET fuel=$4,status=$5,operator=$6,open=$7`,
+       ON CONFLICT (id,pump_id) DO UPDATE SET fuel=$4,status=$5,operator=$6,open=$7`,
       [id, req.params.id, ownerId, fuel, status||'Active', operator||'', openVal]
     );
     res.json({ ok: true, id, open_reading: openVal });
