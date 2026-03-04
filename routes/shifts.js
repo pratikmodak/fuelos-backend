@@ -70,7 +70,21 @@ router.post('/', requireAuth, async (req, res) => {
   try {
     const ownerId = req.user.owner_id || req.user.id;
     const s = req.body;
-    const totalRevenue = (s.cash||0) + (s.upi||0) + (s.card||0) + (s.credit||0);
+
+    // Calculate revenue per fuel type from nozzle readings
+    const nrs = s.nozzleReadings || s.nozzle_readings || [];
+    let petrolRev = 0, dieselRev = 0, cngRev = 0;
+    let petrolVol = 0, dieselVol = 0, cngVol = 0;
+    nrs.forEach(nr => {
+      const fuel = (nr.fuel || '').toLowerCase();
+      const vol  = nr.saleVol ?? nr.volume ?? 0;
+      const rev  = nr.revenue ?? 0;
+      if (fuel.includes('petrol') || fuel.includes('speed')) { petrolRev += rev; petrolVol += vol; }
+      else if (fuel.includes('diesel'))                       { dieselRev += rev; dieselVol += vol; }
+      else if (fuel.includes('cng'))                          { cngRev    += rev; cngVol    += vol; }
+    });
+    const totalRevenue = petrolRev + dieselRev + cngRev ||
+      (s.cash||0) + (s.upi||0) + (s.card||0) + (s.credit||0);
 
     // Ensure shift column exists (added after initial schema)
     await db.query(`ALTER TABLE nozzle_readings ADD COLUMN IF NOT EXISTS shift TEXT`).catch(()=>{});
@@ -93,7 +107,7 @@ router.post('/', requireAuth, async (req, res) => {
         s.id, ownerId, s.pumpId||s.pump_id, s.operatorId||s.operator_id||null,
         s.operator, s.shift, s.date, JSON.stringify(s.nozzleReadings||s.nozzle_readings||[]),
         s.cash||0, s.upi||0, s.card||0, s.credit||0, totalRevenue,
-        s.petrolVol||s.petrol_vol||0, s.dieselVol||s.diesel_vol||0, s.cngVol||s.cng_vol||0,
+        s.petrolVol||petrolVol||s.petrol_vol||0, s.dieselVol||dieselVol||s.diesel_vol||0, s.cngVol||cngVol||s.cng_vol||0,
         s.status||'Submitted', s.note||null,
         s.startedAt || null,
       ]
@@ -110,7 +124,7 @@ router.post('/', requireAuth, async (req, res) => {
            cng=sales.cng+EXCLUDED.cng,
            total=sales.total+EXCLUDED.total`,
         [ownerId, s.pumpId||s.pump_id, s.date,
-         s.petrolVol||0, s.dieselVol||0, s.cngVol||0, totalRevenue]
+         petrolRev, dieselRev, cngRev, totalRevenue]
       );
     }
 
