@@ -71,22 +71,27 @@ router.post('/', requireAuth, async (req, res) => {
     const s = req.body;
     const totalRevenue = (s.cash||0) + (s.upi||0) + (s.card||0) + (s.credit||0);
 
+    // Ensure shift_started_at column exists (added after initial schema)
+    await db.query(`ALTER TABLE shift_reports ADD COLUMN IF NOT EXISTS shift_started_at TIMESTAMPTZ`).catch(()=>{});
+
     // Upsert shift
     await db.query(
       `INSERT INTO shift_reports
          (id,owner_id,pump_id,operator_id,operator,shift,date,nozzle_readings,
-          cash,upi,card,credit,total_revenue,petrol_vol,diesel_vol,cng_vol,status,note)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+          cash,upi,card,credit,total_revenue,petrol_vol,diesel_vol,cng_vol,status,note,shift_started_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
        ON CONFLICT (id) DO UPDATE SET
          cash=$9,upi=$10,card=$11,credit=$12,total_revenue=$13,
          petrol_vol=$14,diesel_vol=$15,cng_vol=$16,status=$17,note=$18,
-         nozzle_readings=$8`,
+         nozzle_readings=$8,
+         shift_started_at=COALESCE(shift_reports.shift_started_at, EXCLUDED.shift_started_at)`,
       [
         s.id, ownerId, s.pumpId||s.pump_id, s.operatorId||s.operator_id||null,
         s.operator, s.shift, s.date, JSON.stringify(s.nozzleReadings||s.nozzle_readings||[]),
         s.cash||0, s.upi||0, s.card||0, s.credit||0, totalRevenue,
         s.petrolVol||s.petrol_vol||0, s.dieselVol||s.diesel_vol||0, s.cngVol||s.cng_vol||0,
-        s.status||'Submitted', s.note||null
+        s.status||'Submitted', s.note||null,
+        s.startedAt || null,
       ]
     );
 
@@ -370,14 +375,18 @@ router.get('/attendance-report', requireAuth, async (req, res) => {
 
     const r = await db.query(`
       SELECT sr.*,
-             dna.nozzle_ids AS assigned_nozzles
+             dna.nozzle_ids AS assigned_nozzles,
+             MIN(nr.created_at) AS first_reading_at
       FROM   shift_reports sr
       LEFT JOIN daily_nozzle_assignments dna
              ON dna.operator_id::TEXT = sr.operator_id::TEXT
             AND dna.date              = sr.date
             AND dna.shift             = sr.shift
             AND dna.pump_id           = sr.pump_id
+      LEFT JOIN nozzle_readings nr
+             ON nr.shift_id = sr.id
       WHERE  ${where.join(' AND ')}
+      GROUP BY sr.id, dna.nozzle_ids
       ORDER  BY sr.date DESC, sr.operator
     `, vals);
 
@@ -394,21 +403,26 @@ router.get('/attendance-report', requireAuth, async (req, res) => {
         } catch {}
       }
 
-      // Hours worked: from shift start time to submit time (created_at)
-      const submitTime = s.created_at ? new Date(s.created_at) : null;
-      const shiftStartStr = shiftStart[s.shift] || '08:00';
+      // Login time: shift_started_at → fallback to first nozzle reading → fallback to shift default
+      const loginTime  = s.shift_started_at ? new Date(s.shift_started_at)
+                       : s.first_reading_at  ? new Date(s.first_reading_at)
+                       : null;
+      const logoutTime = s.created_at ? new Date(s.created_at) : null;
+
       let hoursWorked = null;
-      if (submitTime) {
-        const [sh, sm] = shiftStartStr.split(':').map(Number);
-        const dateStr = String(s.date).slice(0,10);
-        // shift start on the shift date
-        const startDt = new Date(`${dateStr}T${shiftStartStr}:00+05:30`);
-        // For night shift, if submit time is before 6am next day it's still same shift
-        let diff = (submitTime - startDt) / 3600000; // hours
-        if (diff < 0) diff += 24; // handles night shift crossing midnight
-        if (diff > 16) diff = diff - 24; // clamp
-        hoursWorked = Math.max(0, Math.round(diff * 10) / 10);
+      if (loginTime && logoutTime && logoutTime > loginTime) {
+        const diffMs = logoutTime - loginTime;
+        hoursWorked = Math.round((diffMs / 3600000) * 10) / 10; // round to 1 decimal
       }
+
+      const loginStr  = loginTime  ? loginTime.toLocaleTimeString('en-IN',
+                          { timeZone:'Asia/Kolkata', hour:'2-digit', minute:'2-digit', hour12:true }) : '—';
+      const loginDateStr = loginTime ? loginTime.toLocaleDateString('en-IN',
+                          { timeZone:'Asia/Kolkata', day:'2-digit', month:'short', year:'numeric' }) : '—';
+      const logoutStr = logoutTime ? logoutTime.toLocaleTimeString('en-IN',
+                          { timeZone:'Asia/Kolkata', hour:'2-digit', minute:'2-digit', hour12:true }) : '—';
+      const logoutDateStr = logoutTime ? logoutTime.toLocaleDateString('en-IN',
+                          { timeZone:'Asia/Kolkata', day:'2-digit', month:'short', year:'numeric' }) : '—';
 
       return {
         id:           s.id,
@@ -416,11 +430,10 @@ router.get('/attendance-report', requireAuth, async (req, res) => {
         operatorId:   String(s.operator_id || ''),
         date:         String(s.date).slice(0,10),
         shift:        s.shift || '',
-        shiftStart:   shiftStartStr,
-        logoutTime:   submitTime ? submitTime.toLocaleString('en-IN', { timeZone:'Asia/Kolkata',
-                        hour:'2-digit', minute:'2-digit', hour12:true }) : '—',
-        logoutDate:   submitTime ? submitTime.toLocaleDateString('en-IN', { timeZone:'Asia/Kolkata',
-                        day:'2-digit', month:'short', year:'numeric' }) : '—',
+        loginTime:    loginStr,
+        loginDate:    loginDateStr,
+        logoutTime:   logoutStr,
+        logoutDate:   logoutDateStr,
         hoursWorked,
         nozzles:      nozzles.join(', ') || '—',
         revenue:      parseFloat(s.total_revenue || 0),
