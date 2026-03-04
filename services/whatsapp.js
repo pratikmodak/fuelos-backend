@@ -175,9 +175,18 @@ const notifyShiftConfirmed = async (ownerPhone, data) => {
   const cfg = await getWaConfig();
   const { pumpName, operator, shift, confirmedBy, amount } = data;
   const r = n => String(Number(n||0).toLocaleString('en-IN'));
-  return sendTemplate(ownerPhone, cfg.tplShiftConfirmed, 'en_US',
+  const tpl = await sendTemplate(ownerPhone, cfg.tplShiftConfirmed, 'en_US',
     bodyParams(pumpName||'Pump', operator||'', shift||'', confirmedBy||'Manager', r(amount))
   );
+  if (tpl.ok) return tpl;
+  console.warn('[WhatsApp] Template failed, falling back to text:', tpl.error);
+  const msg = [
+    `✅ Shift Confirmed — ${pumpName||'Pump'}`,
+    `Operator: ${operator} | Shift: ${shift}`,
+    `Confirmed by: ${confirmedBy||'Manager'}`,
+    `Revenue: Rs.${r(amount)}`,
+  ].join('\n');
+  return sendText(ownerPhone, msg);
 };
 
 // ── Notify owner after successful plan payment
@@ -188,9 +197,16 @@ const notifyPaymentSuccess = async (ownerPhone, data) => {
   const cfg = await getWaConfig();
   const { plan, billing, amount, validTill } = data;
   const r = n => String(Number(n||0).toLocaleString('en-IN'));
-  return sendTemplate(ownerPhone, cfg.tplPaymentSuccess, 'en_US',
+  const tpl = await sendTemplate(ownerPhone, cfg.tplPaymentSuccess, 'en_US',
     bodyParams(plan||'', billing||'Monthly', r(amount), validTill||'')
   );
+  if (tpl.ok) return tpl;
+  console.warn('[WhatsApp] Template failed, falling back to text:', tpl.error);
+  return sendText(ownerPhone, [
+    `💳 Payment Successful — FuelOS`,
+    `Plan: ${plan} | Billing: ${billing||'Monthly'}`,
+    `Amount: Rs.${r(amount)} | Valid till: ${validTill}`,
+  ].join('\n'));
 };
 
 // ── Low stock alert
@@ -200,10 +216,17 @@ const notifyLowStock = async (ownerPhone, data) => {
   if (!ownerPhone) return { ok: false, error: 'No owner phone' };
   const cfg = await getWaConfig();
   const { pumpName, tankName, currentStock, threshold } = data;
-  return sendTemplate(ownerPhone, cfg.tplLowStock, 'en_US',
+  const tpl = await sendTemplate(ownerPhone, cfg.tplLowStock, 'en_US',
     bodyParams(pumpName||'Pump', tankName||'Tank',
                String(currentStock||0), String(threshold||0))
   );
+  if (tpl.ok) return tpl;
+  console.warn('[WhatsApp] Template failed, falling back to text:', tpl.error);
+  return sendText(ownerPhone, [
+    `⚠️ Low Stock Alert — ${pumpName||'Pump'}`,
+    `Tank: ${tankName} | Current: ${currentStock}L | Threshold: ${threshold}L`,
+    `Please arrange a refill.`,
+  ].join('\n'));
 };
 
 module.exports = {
