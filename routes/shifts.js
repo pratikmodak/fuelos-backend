@@ -83,8 +83,9 @@ router.post('/', requireAuth, async (req, res) => {
       else if (fuel.includes('diesel'))                       { dieselRev += rev; dieselVol += vol; }
       else if (fuel.includes('cng'))                          { cngRev    += rev; cngVol    += vol; }
     });
+    const creditVal = s.credit_out || s.creditOut || s.credit || 0;
     const totalRevenue = petrolRev + dieselRev + cngRev ||
-      (s.cash||0) + (s.upi||0) + (s.card||0) + (s.credit||0);
+      (s.cash||0) + (s.upi||0) + (s.card||0) + creditVal;
 
     // Ensure shift column exists (added after initial schema)
     await db.query(`ALTER TABLE nozzle_readings ADD COLUMN IF NOT EXISTS shift TEXT`).catch(()=>{});
@@ -106,7 +107,7 @@ router.post('/', requireAuth, async (req, res) => {
       [
         s.id, ownerId, s.pumpId||s.pump_id, s.operatorId||s.operator_id||null,
         s.operator, s.shift, s.date, JSON.stringify(s.nozzleReadings||s.nozzle_readings||[]),
-        s.cash||0, s.upi||0, s.card||0, s.credit||0, totalRevenue,
+        s.cash||0, s.upi||0, s.card||0, creditVal, totalRevenue,
         s.petrolVol||petrolVol||s.petrol_vol||0, s.dieselVol||dieselVol||s.diesel_vol||0, s.cngVol||cngVol||s.cng_vol||0,
         s.status||'Submitted', s.note||null,
         s.startedAt || null,
