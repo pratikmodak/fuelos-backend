@@ -53,8 +53,9 @@ router.get('/readings', requireAuth, async (req, res) => {
       nozzleId:     nr.nozzle_id,
       openReading:  parseFloat(nr.open_reading||0),
       closeReading: parseFloat(nr.close_reading||0),
-      date:         String(nr.date||'').slice(0,10), // normalize DATE → YYYY-MM-DD
-      status:       nr.status || 'Submitted',        // nozzle_readings has no status col yet; default Submitted
+      date:         String(nr.date||'').slice(0,10),
+      shift:        nr.shift || '',
+      status:       nr.status || 'Submitted',
       shiftIndex:   nr.shift_index ?? nr.shiftIndex ?? 0,
       saleVol:      parseFloat(nr.volume||0),
       revenue:      parseFloat(nr.revenue||0),
@@ -70,6 +71,9 @@ router.post('/', requireAuth, async (req, res) => {
     const ownerId = req.user.owner_id || req.user.id;
     const s = req.body;
     const totalRevenue = (s.cash||0) + (s.upi||0) + (s.card||0) + (s.credit||0);
+
+    // Ensure shift column exists (added after initial schema)
+    await db.query(`ALTER TABLE nozzle_readings ADD COLUMN IF NOT EXISTS shift TEXT`).catch(()=>{});
 
     // Ensure shift_started_at column exists (added after initial schema)
     await db.query(`ALTER TABLE shift_reports ADD COLUMN IF NOT EXISTS shift_started_at TIMESTAMPTZ`).catch(()=>{});
@@ -114,17 +118,19 @@ router.post('/', requireAuth, async (req, res) => {
     for (const nr of (s.nozzleReadings || [])) {
       await db.query(
         `INSERT INTO nozzle_readings
-           (shift_id,pump_id,owner_id,nozzle_id,fuel,operator,date,
+           (shift_id,pump_id,owner_id,nozzle_id,fuel,operator,date,shift,shift_index,
             open_reading,close_reading,volume,rate,revenue)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
          ON CONFLICT DO NOTHING`,
         [
           s.id, s.pumpId||s.pump_id, ownerId,
-          nr.nozzleId||nr.nozzle_id||nr.id, nr.fuel, nr.operator||s.operator,
-          s.date, nr.open||nr.openReading||0, nr.close||nr.closeReading||0,
-          nr.volume||0, nr.rate||0, nr.revenue||0
+          nr.nozzleId||nr.nozzle_id, nr.fuel, nr.operator||s.operator,
+          s.date, s.shift, nr.shiftIndex??nr.shift_index??0,
+          nr.openReading??nr.open_reading??0,
+          nr.closeReading??nr.close_reading??0,
+          nr.saleVol??nr.volume??0, nr.rate||0, nr.revenue||0
         ]
-      ).catch(() => {}); // Ignore duplicate errors for readings
+      ).catch(e => console.error('[nozzle_readings insert]', e.message));
     }
 
     res.json({ ok: true, id: s.id });
