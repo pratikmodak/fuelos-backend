@@ -132,12 +132,19 @@ router.post('/', requireAuth, async (req, res) => {
         ]
       ).catch(e => console.error('[nozzle_readings insert]', e.message));
 
-      // ── KEY FIX: update nozzle's open+close reading so next shift sees correct value
-      if (nr.closeReading != null && (nr.nozzleId || nr.nozzle_id)) {
-        await db.query(
-          `UPDATE nozzles SET open=$1, close=$1 WHERE id=$2 AND pump_id=$3`,
-          [nr.closeReading ?? nr.close_reading, nr.nozzleId || nr.nozzle_id, s.pumpId || s.pump_id]
-        ).catch(e => console.error('[nozzle update]', e.message));
+      // Update nozzle's open+close reading so next shift sees correct value
+      const closeVal = nr.closeReading ?? nr.close_reading;
+      const nozzleId = nr.nozzleId || nr.nozzle_id;
+      const pumpId   = s.pumpId || s.pump_id;
+      console.log(`[nozzle update] nozzle=${nozzleId} pump=${pumpId} closeVal=${closeVal}`);
+      if (closeVal != null && closeVal > 0 && nozzleId) {
+        const upd = await db.query(
+          `UPDATE nozzles SET open=$1, close=$1 WHERE id=$2 AND pump_id=$3 RETURNING id, open`,
+          [closeVal, nozzleId, pumpId]
+        ).catch(e => { console.error('[nozzle update error]', e.message); return null; });
+        console.log(`[nozzle update result]`, upd?.rows?.[0]);
+      } else {
+        console.warn(`[nozzle update SKIPPED] closeVal=${closeVal} nozzleId=${nozzleId}`);
       }
     }
 
