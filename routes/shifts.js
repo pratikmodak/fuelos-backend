@@ -348,4 +348,99 @@ router.get('/attendance', requireAuth, async (req, res) => {
 });
 
 
+// GET /api/shifts/attendance-report?pump_id=&month=YYYY-MM
+// Rich report joining shift_reports + nozzle assignments
+router.get('/attendance-report', requireAuth, async (req, res) => {
+  try {
+    const ownerId = req.user.owner_id || req.user.id;
+    const { pump_id, month } = req.query;
+    if (!month) return res.status(400).json({ error: 'month required (YYYY-MM)' });
+
+    const monthStart = month + '-01';
+    // last day of month
+    const [yr, mo] = month.split('-').map(Number);
+    const monthEnd = new Date(yr, mo, 0).toISOString().slice(0,10);
+
+    const where = ['sr.owner_id=$1', 'sr.date >= $2', 'sr.date <= $3'];
+    const vals  = [ownerId, monthStart, monthEnd];
+    if (pump_id) { vals.push(pump_id); where.push(`sr.pump_id=$${vals.length}`); }
+
+    // Shift start times (India standard pump shifts)
+    const shiftStart = { Morning: '06:00', Afternoon: '14:00', Night: '22:00' };
+
+    const r = await db.query(`
+      SELECT sr.*,
+             dna.nozzle_ids AS assigned_nozzles
+      FROM   shift_reports sr
+      LEFT JOIN daily_nozzle_assignments dna
+             ON dna.operator_id = sr.operator_id
+            AND dna.date        = sr.date
+            AND dna.shift       = sr.shift
+            AND dna.pump_id     = sr.pump_id
+      WHERE  ${where.join(' AND ')}
+      ORDER  BY sr.date DESC, sr.operator
+    `, vals);
+
+    const rows = r.rows.map(s => {
+      // Nozzle IDs from assignment OR from nozzle_readings JSONB
+      let nozzles = [];
+      if (s.assigned_nozzles) {
+        nozzles = s.assigned_nozzles.split(',').filter(Boolean);
+      } else {
+        try {
+          const readings = typeof s.nozzle_readings === 'string'
+            ? JSON.parse(s.nozzle_readings) : (s.nozzle_readings || []);
+          nozzles = [...new Set(readings.map(r => r.nozzleId || r.nozzle_id).filter(Boolean))];
+        } catch {}
+      }
+
+      // Hours worked: from shift start time to submit time (created_at)
+      const submitTime = s.created_at ? new Date(s.created_at) : null;
+      const shiftStartStr = shiftStart[s.shift] || '08:00';
+      let hoursWorked = null;
+      if (submitTime) {
+        const [sh, sm] = shiftStartStr.split(':').map(Number);
+        const dateStr = String(s.date).slice(0,10);
+        // shift start on the shift date
+        const startDt = new Date(`${dateStr}T${shiftStartStr}:00+05:30`);
+        // For night shift, if submit time is before 6am next day it's still same shift
+        let diff = (submitTime - startDt) / 3600000; // hours
+        if (diff < 0) diff += 24; // handles night shift crossing midnight
+        if (diff > 16) diff = diff - 24; // clamp
+        hoursWorked = Math.max(0, Math.round(diff * 10) / 10);
+      }
+
+      return {
+        id:           s.id,
+        operator:     s.operator || '',
+        operatorId:   String(s.operator_id || ''),
+        date:         String(s.date).slice(0,10),
+        shift:        s.shift || '',
+        shiftStart:   shiftStartStr,
+        logoutTime:   submitTime ? submitTime.toLocaleString('en-IN', { timeZone:'Asia/Kolkata',
+                        hour:'2-digit', minute:'2-digit', hour12:true }) : '—',
+        logoutDate:   submitTime ? submitTime.toLocaleDateString('en-IN', { timeZone:'Asia/Kolkata',
+                        day:'2-digit', month:'short', year:'numeric' }) : '—',
+        hoursWorked,
+        nozzles:      nozzles.join(', ') || '—',
+        revenue:      parseFloat(s.total_revenue || 0),
+        cash:         parseFloat(s.cash || 0),
+        upi:          parseFloat(s.upi || 0),
+        card:         parseFloat(s.card || 0),
+        credit:       parseFloat(s.credit || 0),
+        petrolVol:    parseFloat(s.petrol_vol || 0),
+        dieselVol:    parseFloat(s.diesel_vol || 0),
+        status:       s.status || 'Submitted',
+        confirmedBy:  s.confirmed_by || '—',
+        confirmedAt:  s.confirmed_at ? new Date(s.confirmed_at).toLocaleString('en-IN',
+                        { timeZone:'Asia/Kolkata', hour:'2-digit', minute:'2-digit',
+                          hour12:true, day:'2-digit', month:'short' }) : '—',
+      };
+    });
+
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+
 module.exports = router;
