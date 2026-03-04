@@ -373,10 +373,10 @@ router.get('/attendance-report', requireAuth, async (req, res) => {
              dna.nozzle_ids AS assigned_nozzles
       FROM   shift_reports sr
       LEFT JOIN daily_nozzle_assignments dna
-             ON dna.operator_id = sr.operator_id
-            AND dna.date        = sr.date
-            AND dna.shift       = sr.shift
-            AND dna.pump_id     = sr.pump_id
+             ON dna.operator_id::TEXT = sr.operator_id::TEXT
+            AND dna.date              = sr.date
+            AND dna.shift             = sr.shift
+            AND dna.pump_id           = sr.pump_id
       WHERE  ${where.join(' AND ')}
       ORDER  BY sr.date DESC, sr.operator
     `, vals);
