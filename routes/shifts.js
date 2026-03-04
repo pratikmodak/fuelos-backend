@@ -131,6 +131,14 @@ router.post('/', requireAuth, async (req, res) => {
           nr.saleVol??nr.volume??0, nr.rate||0, nr.revenue||0
         ]
       ).catch(e => console.error('[nozzle_readings insert]', e.message));
+
+      // ── KEY FIX: update nozzle's open+close reading so next shift sees correct value
+      if (nr.closeReading != null && (nr.nozzleId || nr.nozzle_id)) {
+        await db.query(
+          `UPDATE nozzles SET open=$1, close=$1 WHERE id=$2 AND pump_id=$3`,
+          [nr.closeReading ?? nr.close_reading, nr.nozzleId || nr.nozzle_id, s.pumpId || s.pump_id]
+        ).catch(e => console.error('[nozzle update]', e.message));
+      }
     }
 
     res.json({ ok: true, id: s.id });
