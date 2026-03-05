@@ -6,7 +6,9 @@ require('dotenv').config();
 
 const express = require('express');
 const cors    = require('cors');
+const http    = require('http');
 const db      = require('./db');
+const wsManager = require('./websocket');
 
 const app = express();
 
@@ -81,8 +83,8 @@ app.use('/api/admin',        require('./routes/admin'));
 app.use('/api/superadmin',   require('./routes/superadmin'));
 app.use('/api/ai',           require('./routes/ai'));
 app.use('/api/notifications', require('./routes/notifications'));
-app.use('/webhook/whatsapp',  require('./routes/whatsapp-webhook')); // Meta WA webhook
-// WhatsApp log alias (admin route)
+app.use('/api/device',       require('./routes/device'));          // ← Dispenser device integration
+app.use('/webhook/whatsapp',  require('./routes/whatsapp-webhook'));
 app.get('/api/whatsapp/log', require('./middleware/auth').requireAdmin, (req, res) => res.json([]));
 
 // ════════════════════════════════════════════════
@@ -104,25 +106,28 @@ app.use((req, res) => {
 const PORT = process.env.PORT || 3000;
 
 async function start() {
-  // Test DB connection
   try {
     await db.query('SELECT 1');
     console.log('[FuelOS] ✓ Database connected');
   } catch (e) {
     console.error('[FuelOS] ✗ Database connection failed:', e.message);
-    console.error('[FuelOS] Set DATABASE_URL in environment variables');
-    // Don't exit — let Render restart it
   }
 
-  app.listen(PORT, () => {
+  // Create HTTP server (needed to share port with WebSocket)
+  const server = http.createServer(app);
+
+  // Attach WebSocket server on same port at /ws
+  wsManager.attach(server);
+
+  server.listen(PORT, () => {
     console.log(`[FuelOS] ✓ Server running on port ${PORT}`);
     console.log(`[FuelOS] ✓ Environment: ${process.env.NODE_ENV || 'development'}`);
     console.log(`[FuelOS] ✓ Frontend allowed: ${allowedOrigins.join(', ')}`);
     console.log(`[FuelOS] ✓ Razorpay: ${process.env.RAZORPAY_KEY_ID ? 'enabled' : 'demo mode'}`);
     console.log(`[FuelOS] ✓ Email OTP: ${process.env.EMAIL_USER ? 'enabled' : 'log-only mode'}`);
     console.log(`[FuelOS] ✓ RapidAPI: ${process.env.RAPIDAPI_KEY ? 'enabled (live fuel prices)' : 'not set (static fallback)'}`);
+    console.log(`[FuelOS] ✓ Device integration: ready (POST /api/device/register)`);
 
-    // Start daily fuel price scheduler (12:01 AM IST)
     const { scheduleDaily } = require('./scheduler');
     scheduleDaily();
   });
