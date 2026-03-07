@@ -20,6 +20,7 @@ const allowedOrigins = [
   'https://fuelos.vercel.app',
   'https://fuelos-v.vercel.app',
   'https://fuelos.ligeratechnology.com',
+  
 ].filter(Boolean);
 
 app.use(cors({
@@ -84,6 +85,7 @@ app.use('/api/superadmin',   require('./routes/superadmin'));
 app.use('/api/ai',           require('./routes/ai'));
 app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/device',       require('./routes/device'));          // ← Dispenser device integration
+app.use('/api/expenses',     require('./routes/expenses'));        // ← Expense tracking
 app.use('/webhook/whatsapp',  require('./routes/whatsapp-webhook'));
 app.get('/api/whatsapp/log', require('./middleware/auth').requireAdmin, (req, res) => res.json([]));
 
