@@ -80,4 +80,85 @@ router.post('/market-summary', requireAuth, async (req, res) => {
   }
 });
 
+
+// POST /api/ai/forecast — 7-day fuel demand forecast
+router.post('/forecast', requireAuth, async (req, res) => {
+  const key = process.env.ANTHROPIC_API_KEY;
+  if (!key) return res.status(503).json({ error: 'AI not configured. Add ANTHROPIC_API_KEY to Render env vars.' });
+
+  try {
+    const { historicalData, pumpName, ownerName, city, today } = req.body;
+
+    if (!historicalData || historicalData.length < 7) {
+      return res.status(400).json({ error: 'Need at least 7 days of shift data to generate a forecast.' });
+    }
+
+    const prompt = `You are a fuel station demand forecasting AI. Analyze the historical daily fuel sales data and generate a 7-day forecast.
+
+PUMP: ${pumpName || 'All Pumps'}
+OWNER: ${ownerName || 'Fuel Station Owner'}
+CITY: ${city || 'India'}
+TODAY: ${today}
+
+HISTORICAL DATA (last ${historicalData.length} days, format: date,revenue_INR,petrol_litres,diesel_litres,cng_kg,shifts):
+${historicalData}
+
+Generate a forecast for the next 7 days starting from tomorrow.
+
+Consider: day-of-week patterns, trends, average daily patterns, anomalies.
+
+Respond ONLY with valid JSON, no markdown, no explanation:
+{
+  "forecast": [
+    {
+      "date": "YYYY-MM-DD",
+      "revenue": 125000,
+      "volumes": { "Petrol": 850, "Diesel": 420, "CNG": 0 },
+      "confidence": 82,
+      "peakShift": "Morning",
+      "note": "one short sentence about this day"
+    }
+  ],
+  "insights": [
+    { "icon": "📈", "title": "Short title", "body": "2-3 sentence insight about patterns, trends, or recommendations" }
+  ],
+  "stockAlert": {
+    "petrol": { "dailyAvg": 820, "weeklyNeed": 5740, "alert": "normal" },
+    "diesel": { "dailyAvg": 410, "weeklyNeed": 2870, "alert": "normal" },
+    "cng":    { "dailyAvg": 0,   "weeklyNeed": 0,    "alert": "none" }
+  },
+  "summary": "One sentence overall forecast summary"
+}`;
+
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': key,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1500,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+      signal: AbortSignal.timeout(30000),
+    });
+
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.error?.message || `Anthropic API ${response.status}`);
+    }
+
+    const data = await response.json();
+    const text = data.content?.find(b => b.type === 'text')?.text || '';
+    const clean = text.replace(/```json|```/g, '').trim();
+    const parsed = JSON.parse(clean);
+    res.json({ ok: true, ...parsed });
+  } catch (e) {
+    console.error('[ai/forecast]', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 module.exports = router;
