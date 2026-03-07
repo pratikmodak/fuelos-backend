@@ -8,21 +8,29 @@ router.get('/', requireAuth, async (req, res) => {
   try {
     const ownerId = req.user.owner_id || req.user.id;
     const r = await db.query('SELECT * FROM pumps WHERE owner_id=$1 ORDER BY name', [ownerId]);
-    res.json(r.rows.map(p => ({ ...p, ownerId: String(p.owner_id), owner_id: String(p.owner_id) })));
+    res.json(r.rows.map(p => ({
+      ...p,
+      ownerId:        String(p.owner_id),
+      owner_id:       String(p.owner_id),
+      latitude:       p.latitude  ? parseFloat(p.latitude)  : null,
+      longitude:      p.longitude ? parseFloat(p.longitude) : null,
+      geofenceRadius: p.geofence_radius || 150,
+    })));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // POST /api/pumps
 router.post('/', requireAuth, async (req, res) => {
   try {
-    const { id, name, short_name, shortName, city, state, address, gst, status, color } = req.body;
+    const { id, name, short_name, shortName, city, state, address, gst, status, color, latitude, longitude, geofence_radius, geofenceRadius } = req.body;
     const ownerId = req.user.owner_id || req.user.id;
     const pumpId = id || 'P' + Date.now();
     await db.query(
-      `INSERT INTO pumps (id,owner_id,name,short_name,city,state,address,gst,status,color)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+      `INSERT INTO pumps (id,owner_id,name,short_name,city,state,address,gst,status,color,latitude,longitude,geofence_radius)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
        ON CONFLICT (id) DO UPDATE SET name=$3,short_name=$4,city=$5,state=$6,address=$7,gst=$8,updated_at=NOW()`,
-      [pumpId, ownerId, name, short_name||shortName, city, state, address, gst, status||'Active', color]
+      [pumpId, ownerId, name, short_name||shortName, city, state, address, gst, status||'Active', color,
+       latitude||null, longitude||null, geofence_radius||geofenceRadius||150]
     );
     const r = await db.query('SELECT * FROM pumps WHERE id=$1', [pumpId]);
     res.json({ ...r.rows[0], ownerId: String(ownerId) });
@@ -34,12 +42,16 @@ router.patch('/:id', requireAuth, async (req, res) => {
   try {
     const { name, short_name, shortName, city, state, address, gst, status } = req.body;
     const ownerId = req.user.owner_id || req.user.id;
+    const { latitude: pLat, longitude: pLng, geofence_radius: pRadius, geofenceRadius: pGeoR } = req.body;
     await db.query(
       `UPDATE pumps SET name=COALESCE($1,name),short_name=COALESCE($2,short_name),
        city=COALESCE($3,city),state=COALESCE($4,state),address=COALESCE($5,address),
-       gst=COALESCE($6,gst),status=COALESCE($7,status),updated_at=NOW()
+       gst=COALESCE($6,gst),status=COALESCE($7,status),
+       latitude=COALESCE($10,latitude),longitude=COALESCE($11,longitude),
+       geofence_radius=COALESCE($12,geofence_radius),updated_at=NOW()
        WHERE id=$8 AND owner_id=$9`,
-      [name, short_name||shortName, city, state, address, gst, status, req.params.id, ownerId]
+      [name, short_name||shortName, city, state, address, gst, status, req.params.id, ownerId,
+       pLat||null, pLng||null, pRadius||pGeoR||null]
     );
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
