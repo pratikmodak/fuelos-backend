@@ -16,21 +16,34 @@ router.get('/', requireAuth, async (req, res) => {
     q += ` ORDER BY date DESC, created_at DESC LIMIT $${vals.length + 1}`;
     vals.push(parseInt(limit));
     const r = await db.query(q, vals);
-    res.json(r.rows.map(s => ({
-      ...s, id: String(s.id),
-      ownerId: String(s.owner_id), owner_id: String(s.owner_id),
-      pumpId: String(s.pump_id||''), pump_id: String(s.pump_id||''), operatorId: String(s.operator_id||''),
-      nozzleReadings: s.nozzle_readings || [],
-      totalRevenue: parseFloat(s.total_revenue||0),
-      petrolVol:    parseFloat(s.petrol_vol||0),
-      dieselVol:    parseFloat(s.diesel_vol||0),
-      cngVol:       parseFloat(s.cng_vol||0),
-      date:         String(s.date||'').slice(0,10), // normalize DATE → YYYY-MM-DD
-      totalSales:   parseFloat(s.total_revenue||0),
-      cash:         parseFloat(s.cash||0),
-      upi:          parseFloat(s.upi||0),
-      card:         parseFloat(s.card||0),
-    })));
+    const IST = { timeZone:'Asia/Kolkata', hour:'2-digit', minute:'2-digit', hour12:true };
+    res.json(r.rows.map(s => {
+      const checkinDt  = s.shift_started_at ? new Date(s.shift_started_at) : null;
+      const checkoutDt = s.created_at       ? new Date(s.created_at)       : null;
+      let hoursWorked = null;
+      if (checkinDt && checkoutDt && checkoutDt > checkinDt)
+        hoursWorked = Math.round(((checkoutDt - checkinDt) / 3600000) * 10) / 10;
+      return {
+        ...s, id: String(s.id),
+        ownerId: String(s.owner_id), owner_id: String(s.owner_id),
+        pumpId: String(s.pump_id||''), pump_id: String(s.pump_id||''), operatorId: String(s.operator_id||''),
+        nozzleReadings: s.nozzle_readings || [],
+        totalRevenue: parseFloat(s.total_revenue||0),
+        petrolVol:    parseFloat(s.petrol_vol||0),
+        dieselVol:    parseFloat(s.diesel_vol||0),
+        cngVol:       parseFloat(s.cng_vol||0),
+        date:         String(s.date||'').slice(0,10),
+        totalSales:   parseFloat(s.total_revenue||0),
+        cash:         parseFloat(s.cash||0),
+        upi:          parseFloat(s.upi||0),
+        card:         parseFloat(s.card||0),
+        // Check-in / check-out times for attendance display
+        checkinTime:  checkinDt  ? checkinDt.toLocaleTimeString('en-IN', IST) : null,
+        checkoutTime: checkoutDt ? checkoutDt.toLocaleTimeString('en-IN', IST) : null,
+        hoursWorked,
+        shift_started_at: s.shift_started_at || null,
+      };
+    }));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
