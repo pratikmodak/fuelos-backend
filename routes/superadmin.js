@@ -59,22 +59,126 @@ router.get('/overview', requireAdmin, async (req, res) => {
 });
 
 // ════════════════════════════════════════════════
-// GET /api/superadmin/activity — recent platform activity
+// GET /api/superadmin/activity — staff usage monitor + recent platform activity
 // ════════════════════════════════════════════════
 router.get('/activity', requireAdmin, async (req, res) => {
   try {
-    const [logins, shifts, payments, newOwners] = await Promise.all([
-      db.query(`SELECT id,email,name,'owner_login' as type,updated_at as time FROM owners WHERE updated_at > NOW()-INTERVAL '7 days' ORDER BY updated_at DESC LIMIT 10`),
-      db.query(`SELECT sr.id, o.name as owner_name, sr.pump_id, sr.date, sr.total_revenue, sr.created_at FROM shift_reports sr JOIN owners o ON o.id=sr.owner_id WHERE sr.created_at > NOW()-INTERVAL '7 days' ORDER BY sr.created_at DESC LIMIT 10`),
-      db.query(`SELECT t.id,o.name as owner_name,t.plan,t.amount,t.date,t.created_at FROM transactions t JOIN owners o ON o.id=t.owner_id WHERE t.created_at > NOW()-INTERVAL '30 days' ORDER BY t.created_at DESC LIMIT 10`),
-      db.query(`SELECT id,email,name,plan,created_at FROM owners WHERE created_at > NOW()-INTERVAL '30 days' ORDER BY created_at DESC LIMIT 5`),
+    const [mgrsRes, opsRes, shiftsRes, paymentsRes, newOwnersRes] = await Promise.all([
+
+      // Managers — with last activity derived from shift_reports or op_log
+      db.query(`
+        SELECT
+          m.id, m.name, m.email, m.phone, m.owner_id, m.pump_id,
+          m.shift, m.status,
+          o.name  AS owner_name,
+          p.name  AS pump_name,
+          'Manager' AS role,
+          -- last activity = most recent shift submitted OR op_log entry
+          GREATEST(
+            (SELECT MAX(sr.created_at) FROM shift_reports sr WHERE sr.owner_id = m.owner_id AND sr.created_at > NOW() - INTERVAL '30 days'),
+            (SELECT MAX(ol.created_at) FROM op_log ol WHERE ol.actor_id = m.id::text AND ol.created_at > NOW() - INTERVAL '30 days')
+          ) AS last_active,
+          -- 7-day shift count as proxy for logins
+          (SELECT COUNT(*) FROM shift_reports sr WHERE sr.owner_id = m.owner_id AND sr.created_at > NOW() - INTERVAL '7 days') AS logins7d
+        FROM managers m
+        LEFT JOIN owners o ON o.id = m.owner_id
+        LEFT JOIN pumps  p ON p.id = m.pump_id
+        WHERE m.status = 'Active'
+        ORDER BY last_active DESC NULLS LAST
+      `),
+
+      // Operators — with last activity from shift_reports (they submit shifts)
+      db.query(`
+        SELECT
+          op.id, op.name, op.email, op.phone, op.owner_id, op.pump_id,
+          op.shift, op.status, op.points, op.streak,
+          o.name  AS owner_name,
+          p.name  AS pump_name,
+          'Operator' AS role,
+          -- last activity = most recent shift they're in
+          (SELECT MAX(sr.created_at) FROM shift_reports sr
+           WHERE sr.operator_id = op.id AND sr.created_at > NOW() - INTERVAL '30 days'
+          ) AS last_active,
+          -- 7-day shift count
+          (SELECT COUNT(*) FROM shift_reports sr
+           WHERE sr.operator_id = op.id AND sr.created_at > NOW() - INTERVAL '7 days'
+          ) AS logins7d
+        FROM operators op
+        LEFT JOIN owners o ON o.id = op.owner_id
+        LEFT JOIN pumps  p ON p.id = op.pump_id
+        WHERE op.status = 'Active'
+        ORDER BY last_active DESC NULLS LAST
+      `),
+
+      // Recent shifts across all owners
+      db.query(`
+        SELECT sr.id, o.name AS owner_name, sr.pump_id, sr.date,
+               sr.total_revenue, sr.created_at, sr.operator, sr.shift
+        FROM shift_reports sr
+        JOIN owners o ON o.id = sr.owner_id
+        WHERE sr.created_at > NOW() - INTERVAL '7 days'
+        ORDER BY sr.created_at DESC LIMIT 15
+      `),
+
+      // Recent payments
+      db.query(`
+        SELECT t.id, o.name AS owner_name, t.plan, t.amount, t.date, t.created_at
+        FROM transactions t
+        JOIN owners o ON o.id = t.owner_id
+        WHERE t.created_at > NOW() - INTERVAL '30 days'
+        ORDER BY t.created_at DESC LIMIT 10
+      `),
+
+      // New owners
+      db.query(`
+        SELECT id, email, name, plan, created_at
+        FROM owners
+        WHERE created_at > NOW() - INTERVAL '30 days'
+        ORDER BY created_at DESC LIMIT 5
+      `),
     ]);
 
+    // Calculate days_inactive and compliance for each staff member
+    const calcStaff = (rows) => rows.map(u => {
+      const lastActive = u.last_active ? new Date(u.last_active) : null;
+      const now        = new Date();
+      const daysInactive = lastActive
+        ? Math.floor((now - lastActive) / 86400000)
+        : 999; // never active
+
+      const compliance =
+        daysInactive === 0   ? 'compliant' :
+        daysInactive === 1   ? 'reminder'  :
+        daysInactive >= 2    ? 'non-compliant' : 'never';
+
+      return {
+        id:           String(u.id),
+        name:         u.name,
+        email:        u.email,
+        phone:        u.phone,
+        role:         u.role,
+        pump:         u.pump_name || u.pump_id || '—',
+        pumpId:       u.pump_id,
+        ownerName:    u.owner_name || '—',
+        ownerId:      String(u.owner_id),
+        shift:        u.shift,
+        last_login:   u.last_active || null,
+        days_inactive: daysInactive === 999 ? null : daysInactive,
+        logins7d:     parseInt(u.logins7d || 0),
+        compliance,
+        points:       u.points || 0,
+        streak:       u.streak  || 0,
+      };
+    });
+
     res.json({
-      recent_shifts:   shifts.rows,
-      recent_payments: payments.rows,
-      new_owners:      newOwners.rows,
-      recent_logins:   logins.rows,
+      managers:        calcStaff(mgrsRes.rows),
+      operators:       calcStaff(opsRes.rows),
+      recent_shifts:   shiftsRes.rows,
+      recent_payments: paymentsRes.rows,
+      new_owners:      newOwnersRes.rows,
+      // Legacy field — keep for backward compat
+      recent_logins:   [],
     });
   } catch (e) {
     console.error('[superadmin/activity]', e);
