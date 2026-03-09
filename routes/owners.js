@@ -291,8 +291,8 @@ router.post('/credit-customers/:id/purchase', requireOwnerOrManager, async (req,
       [txnId, ownerId, req.params.id, date||new Date().toISOString().slice(0,10), fuel, qty||0, rate||0, amount, note||null]
     );
     await db.query(
-      `UPDATE credit_customers SET outstanding=outstanding+$1, last_txn=$2, updated_at=NOW() WHERE id=$3`,
-      [amount, date||new Date().toISOString().slice(0,10), req.params.id]
+      `UPDATE credit_customers SET outstanding=outstanding+$1::numeric, last_txn=$2, updated_at=NOW() WHERE id=$3`,
+      [parseFloat(amount), date||new Date().toISOString().slice(0,10), req.params.id]
     );
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -310,8 +310,8 @@ router.post('/credit-customers/:id/collect', requireOwnerOrManager, async (req, 
       [txnId, ownerId, req.params.id, amount, note||null]
     );
     await db.query(
-      `UPDATE credit_customers SET outstanding=GREATEST(0,outstanding-$1), last_txn=CURRENT_DATE, updated_at=NOW() WHERE id=$2`,
-      [amount, req.params.id]
+      `UPDATE credit_customers SET outstanding=GREATEST(0,outstanding-$1::numeric), last_txn=CURRENT_DATE, updated_at=NOW() WHERE id=$2`,
+      [parseFloat(amount), req.params.id]
     );
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
