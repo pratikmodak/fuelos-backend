@@ -662,7 +662,7 @@ router.post('/staff-followup/:staffId', requireAdmin, async (req, res) => {
       `SELECT s.id, s.name, s.phone, s.email, s.owner_id,
               COALESCE(s.lang_pref, 'en') AS lang_pref,
               o.name AS owner_name, o.whatsapp_num, o.whatsapp,
-              COALESCE(o.lang_pref, 'en') AS owner_lang_pref
+              'en' AS owner_lang_pref
        FROM ${table} s
        LEFT JOIN owners o ON o.id = s.owner_id
        WHERE s.id = $1`,
@@ -677,7 +677,7 @@ router.post('/staff-followup/:staffId', requireAdmin, async (req, res) => {
     if (!phone) return res.status(400).json({ error: 'No phone number on record for this staff member' });
 
     const staffRole = role === 'manager' ? 'Manager' : 'Operator';
-    const staffLang = resolveLang(staff);
+    const staffLang = staff.lang_pref || 'en';
     const msg = staffFollowup(staff, staff.owner_name, staffLang);
 
     // Send via Meta WhatsApp API
