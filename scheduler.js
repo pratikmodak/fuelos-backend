@@ -229,6 +229,7 @@ async function runDailyFetch() {
       }
     }
     console.log('[Scheduler] ─── Done ───');
+    await runGraceJob();
   } catch (e) {
     console.error('[Scheduler] Fatal:', e.message);
   }
@@ -253,4 +254,154 @@ function scheduleDaily() {
   go();
 }
 
-module.exports = { scheduleDaily, runDailyFetch, STATIC_PRICES };
+
+// ═══════════════════════════════════════════════════════════
+// GRACE PERIOD JOB — runs daily at 12:01 AM IST
+// Auto-grants 1-month grace on expiry, sends WA at day 5/15/25,
+// deactivates if grace_until also passed and not renewed
+// ═══════════════════════════════════════════════════════════
+
+async function sendGraceWA(owner, daysLeftInGrace) {
+  const WA_TOKEN    = process.env.WA_TOKEN;
+  const WA_PHONE_ID = process.env.WA_PHONE_ID;
+  if (!WA_TOKEN || !WA_PHONE_ID) {
+    console.log('[Grace] WA credentials missing — skipping for', owner.name);
+    return;
+  }
+  const raw   = (owner.whatsapp_num || owner.phone || '').replace(/\D/g, '');
+  if (!raw)   { console.log('[Grace] No phone for', owner.name); return; }
+  const to    = raw.startsWith('91') ? raw : '91' + raw;
+  const graceDate = new Date(owner.grace_until).toLocaleDateString('en-IN', {day:'numeric',month:'long',year:'numeric'});
+  const expDate   = new Date(owner.end_date).toLocaleDateString('en-IN',    {day:'numeric',month:'long',year:'numeric'});
+
+  let urgencyLine = '';
+  if      (daysLeftInGrace <= 5)  urgencyLine = '🚨 *URGENT — Only ' + daysLeftInGrace + ' days left!*';
+  else if (daysLeftInGrace <= 15) urgencyLine = '⚠️ *' + daysLeftInGrace + ' days left in your grace period*';
+  else                            urgencyLine = '📅 *Friendly reminder — ' + daysLeftInGrace + ' days remaining*';
+
+  const body =
+    '🔔 *FuelOS Subscription Grace Period Notice*\n' +
+    'Hi ' + owner.name + ',\n\n' +
+    urgencyLine + '\n\n' +
+    'Your *' + owner.plan + '* plan expired on ' + expDate + '.\n' +
+    '✅ Your account is still *fully active* until *' + graceDate + '*\n\n' +
+    '💳 Please renew before ' + graceDate + ' to avoid suspension:\n' +
+    '👉 Login → Billing → Renew Plan\n\n' +
+    (daysLeftInGrace <= 5
+      ? '⛔ After ' + graceDate + ', access will be suspended automatically.\n\nPlease act now. Thank you!'
+      : 'Renew early to keep your pumps running without interruption. 🙏 — FuelOS Team'
+    );
+
+  try {
+    const r = await fetch('https://graph.facebook.com/v19.0/' + WA_PHONE_ID + '/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + WA_TOKEN },
+      body: JSON.stringify({ messaging_product: 'whatsapp', to, type: 'text', text: { body } }),
+    });
+    const d = await r.json();
+    if (r.ok) {
+      console.log('[Grace WA] ✓ Sent to', owner.name, '(', to, ') —', daysLeftInGrace, 'days left');
+      // Log to wa_messages table
+      const logId = 'grace_' + String(owner.id) + '_d' + daysLeftInGrace + '_' + Date.now();
+      await db.query(
+        `INSERT INTO wa_messages (id,owner_id,sender_id,sender_role,sender_name,to_phone,customer_name,message,category,status,meta_msg_id)
+         VALUES ($1,$2,'system','system','FuelOS Scheduler',$3,$4,$5,'renewal','sent',$6) ON CONFLICT DO NOTHING`,
+        [logId, String(owner.id), to, owner.name, body, d?.messages?.[0]?.id || null]
+      ).catch(() => {});
+    } else {
+      console.warn('[Grace WA] ✗ Failed for', owner.name, ':', d?.error?.message);
+    }
+  } catch(e) {
+    console.warn('[Grace WA] Error for', owner.name, ':', e.message);
+  }
+}
+
+async function runGraceJob() {
+  console.log('[Grace] ── Starting grace period check ──');
+  try {
+    // STEP 1: Auto-grant 1-month grace to owners whose subscription just expired
+    const justExpired = await db.query(`
+      SELECT * FROM owners
+      WHERE status = 'Active'
+        AND end_date IS NOT NULL
+        AND end_date < CURRENT_DATE
+        AND (grace_until IS NULL OR grace_until < end_date)
+    `).catch(() => ({ rows: [] }));
+
+    for (const o of justExpired.rows) {
+      const base  = new Date(o.end_date);
+      const grace = new Date(base);
+      grace.setMonth(grace.getMonth() + 1);
+      const graceStr = grace.toISOString().slice(0, 10);
+      await db.query(
+        `UPDATE owners
+         SET grace_until=$1, grace_granted_at=NOW(), grace_granted_by='auto-scheduler',
+             grace_wa_day5=FALSE, grace_wa_day15=FALSE, grace_wa_day25=FALSE, updated_at=NOW()
+         WHERE id=$2`,
+        [graceStr, o.id]
+      );
+      console.log('[Grace] ✓ Granted grace to', o.name, '— until', graceStr);
+    }
+
+    // STEP 2: Send WA reminders for owners currently in grace period
+    const inGrace = await db.query(`
+      SELECT * FROM owners
+      WHERE status = 'Active'
+        AND end_date IS NOT NULL
+        AND end_date < CURRENT_DATE
+        AND grace_until IS NOT NULL
+        AND grace_until >= CURRENT_DATE
+    `).catch(() => ({ rows: [] }));
+
+    for (const o of inGrace.rows) {
+      const graceEnd   = new Date(o.grace_until);
+      const today      = new Date();
+      const daysLeft   = Math.ceil((graceEnd - today) / 86400000);
+      const grantedAt  = o.grace_granted_at ? new Date(o.grace_granted_at) : new Date(o.end_date);
+      const daysSince  = Math.floor((today - grantedAt) / 86400000);
+
+      if      (daysSince >= 5  && daysSince < 9  && !o.grace_wa_day5) {
+        await sendGraceWA(o, daysLeft);
+        await db.query(`UPDATE owners SET grace_wa_day5=TRUE  WHERE id=$1`, [o.id]);
+      }
+      else if (daysSince >= 15 && daysSince < 19 && !o.grace_wa_day15) {
+        await sendGraceWA(o, daysLeft);
+        await db.query(`UPDATE owners SET grace_wa_day15=TRUE WHERE id=$1`, [o.id]);
+      }
+      else if (daysSince >= 25 && daysSince < 29 && !o.grace_wa_day25) {
+        await sendGraceWA(o, daysLeft);
+        await db.query(`UPDATE owners SET grace_wa_day25=TRUE WHERE id=$1`, [o.id]);
+      }
+    }
+
+    // STEP 3: Deactivate owners whose grace period has expired without renewal
+    const graceExpired = await db.query(`
+      SELECT * FROM owners
+      WHERE status = 'Active'
+        AND grace_until IS NOT NULL
+        AND grace_until < CURRENT_DATE
+    `).catch(() => ({ rows: [] }));
+
+    for (const o of graceExpired.rows) {
+      await db.query(
+        `UPDATE owners SET status='Suspended', updated_at=NOW() WHERE id=$1`,
+        [o.id]
+      );
+      await db.query(
+        `INSERT INTO audit_log (user_email, role, action) VALUES ('system','system',$1)`,
+        [`Auto-suspended: grace expired for ${o.name} (${o.email}) grace_until=${o.grace_until}`]
+      ).catch(() => {});
+      console.log('[Grace] ✗ Suspended', o.name, '— grace expired on', o.grace_until);
+    }
+
+    console.log('[Grace] Done —',
+      justExpired.rows.length, 'grace granted |',
+      inGrace.rows.length, 'in grace |',
+      graceExpired.rows.length, 'suspended'
+    );
+  } catch(e) {
+    console.error('[Grace] Fatal:', e.message);
+  }
+}
+
+module.exports = { scheduleDaily, runDailyFetch, runGraceJob, STATIC_PRICES };

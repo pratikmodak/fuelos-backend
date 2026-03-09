@@ -406,29 +406,35 @@ router.get('/contacts', requireAdmin, async (req, res) => {
   try {
     const r = await db.query(`
       SELECT o.id, o.name, o.email, o.phone, o.plan, o.status, o.end_date, o.city,
+             o.whatsapp_num,
+             o.grace_until, o.grace_wa_day5, o.grace_wa_day15, o.grace_wa_day25, o.grace_granted_at,
              (SELECT COUNT(*) FROM pumps WHERE owner_id=o.id) AS pump_count,
              ol.type AS last_contact_type, ol.note AS last_contact_note,
              ol.created_at AS last_contact_at, ol.follow_up,
-             CASE WHEN o.end_date IS NOT NULL
+             CASE WHEN o.grace_until IS NOT NULL AND o.grace_until >= CURRENT_DATE
+               THEN (o.grace_until::date - CURRENT_DATE)
+               WHEN o.end_date IS NOT NULL
                THEN (o.end_date::date - CURRENT_DATE)
                ELSE NULL
-             END AS days_left
+             END AS days_left,
+             CASE WHEN o.grace_until IS NOT NULL AND o.end_date < CURRENT_DATE THEN TRUE ELSE FALSE END AS in_grace
       FROM owners o
       LEFT JOIN LATERAL (
         SELECT * FROM outreach_log WHERE owner_id=o.id ORDER BY created_at DESC LIMIT 1
       ) ol ON TRUE
       ORDER BY o.end_date ASC NULLS LAST
     `);
-    res.json(r.rows.map(o => ({
-      ...o,
-      id:        String(o.id),
-      days_left: o.days_left !== null && o.days_left !== undefined ? parseInt(o.days_left) : null,
-      pump_count: parseInt(o.pump_count || 0),
-      priority:  o.days_left === null ? 'normal'
-                 : o.days_left <= 3  ? 'urgent'
-                 : o.days_left <= 7  ? 'high'
-                 : 'normal',
-    })));
+    res.json(r.rows.map(o => {
+      const dl = o.days_left !== null && o.days_left !== undefined ? parseInt(o.days_left) : null;
+      return {
+        ...o,
+        id:         String(o.id),
+        days_left:  dl,
+        pump_count: parseInt(o.pump_count || 0),
+        in_grace:   o.in_grace || false,
+        priority:   dl === null ? 'normal' : dl <= 3 ? 'urgent' : dl <= 7 ? 'high' : 'normal',
+      };
+    }));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -445,16 +451,135 @@ router.post('/outreach-log', requireAdmin, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// POST /api/superadmin/remind/:userId
+// ── GRACE PERIOD HELPERS ────────────────────────────────────────────
+
+const WA_TOKEN_SA    = process.env.WA_TOKEN;
+const WA_PHONE_ID_SA = process.env.WA_PHONE_ID;
+
+async function sendRenewalWA(owner, customMsg) {
+  const rawPhone = owner.whatsapp_num || owner.phone || '';
+  const phone    = rawPhone.replace(/\D/g,'');
+  if (!phone) return { ok: false, reason: 'no_phone' };
+  if (!WA_TOKEN_SA || !WA_PHONE_ID_SA) return { ok: false, reason: 'no_credentials' };
+
+  const to = phone.startsWith('91') ? phone : '91' + phone;
+  const graceDate = owner.grace_until
+    ? new Date(owner.grace_until).toLocaleDateString('en-IN',{day:'numeric',month:'long',year:'numeric'})
+    : null;
+  const expDate = owner.end_date
+    ? new Date(owner.end_date).toLocaleDateString('en-IN',{day:'numeric',month:'long',year:'numeric'})
+    : '—';
+
+  const body = customMsg || [
+    '\U0001f514 *FuelOS Subscription Renewal Reminder*',
+    'Hi ' + owner.name + ',',
+    '',
+    '\u26a0\ufe0f Your *' + owner.plan + '* plan expired on ' + expDate + '.',
+    graceDate
+      ? ('\u2705 Your account is active during grace period until *' + graceDate + '*.\n\n\U0001f4b3 Please renew before ' + graceDate + ' to avoid suspension.')
+      : '\u2757 Please renew your subscription immediately to avoid service interruption.',
+    '',
+    '\U0001f449 Login \u2192 Billing \u2192 Renew Plan',
+    '',
+    'Thank you! \U0001f64f \u2014 FuelOS Team',
+  ].join('\n');
+
+  try {
+    const r = await fetch('https://graph.facebook.com/v19.0/' + WA_PHONE_ID_SA + '/messages', {
+      method: 'POST',
+      headers: { 'Content-Type':'application/json', Authorization: 'Bearer ' + WA_TOKEN_SA },
+      body: JSON.stringify({ messaging_product:'whatsapp', to, type:'text', text:{ body } }),
+    });
+    const d = await r.json();
+    if (!r.ok) return { ok: false, reason: d?.error?.message || 'Meta API error' };
+
+    // Log to wa_messages
+    const logId = 'grace_' + owner.id + '_' + Date.now();
+    await db.query(
+      `INSERT INTO wa_messages (id,owner_id,sender_id,sender_role,sender_name,to_phone,customer_name,message,category,status,meta_msg_id)
+       VALUES ($1,$2,'system','system','FuelOS Admin',$3,$4,$5,'renewal','sent',$6) ON CONFLICT DO NOTHING`,
+      [logId, String(owner.id), to, owner.name, body, d?.messages?.[0]?.id || null]
+    ).catch(()=>{});
+
+    return { ok: true, to };
+  } catch(e) {
+    return { ok: false, reason: e.message };
+  }
+}
+
+// POST /api/superadmin/remind/:userId — manual WA renewal reminder
 router.post('/remind/:userId', requireAdmin, async (req, res) => {
   try {
     const owner = (await db.query('SELECT * FROM owners WHERE id=$1', [req.params.userId])).rows[0];
     if (!owner) return res.status(404).json({ error: 'Owner not found' });
-    // In production: send renewal reminder email/WA
-    console.log(`[Reminder] Sending to ${owner.email} (plan: ${owner.plan}, expires: ${owner.end_date})`);
+
+    const result = await sendRenewalWA(owner, req.body?.message || null);
+
     await db.query(`INSERT INTO audit_log (user_email,role,action) VALUES ($1,$2,$3)`,
-      [req.user.email, req.user.role, `Sent renewal reminder to ${owner.email}`]);
-    res.json({ ok: true, sent_to: owner.email });
+      [req.user.email, req.user.role,
+       `Manual WA renewal reminder → ${owner.name} (${owner.email}) | result: ${result.ok ? 'sent' : result.reason}`]);
+
+    res.json({ ok: true, wa: result, owner: owner.name });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/superadmin/grant-grace/:userId — manually grant 1-month grace
+router.post('/grant-grace/:userId', requireAdmin, async (req, res) => {
+  try {
+    const owner = (await db.query('SELECT * FROM owners WHERE id=$1', [req.params.userId])).rows[0];
+    if (!owner) return res.status(404).json({ error: 'Owner not found' });
+
+    const base  = owner.end_date ? new Date(owner.end_date) : new Date();
+    const grace = new Date(base);
+    grace.setMonth(grace.getMonth() + 1);
+    const graceStr = grace.toISOString().slice(0,10);
+
+    await db.query(
+      `UPDATE owners SET grace_until=$1, grace_granted_at=NOW(), grace_granted_by=$2,
+       grace_wa_day5=FALSE, grace_wa_day15=FALSE, grace_wa_day25=FALSE, updated_at=NOW()
+       WHERE id=$3`,
+      [graceStr, req.user.email, req.params.userId]
+    );
+
+    // Send WA notification about grace grant
+    const waResult = await sendRenewalWA(owner);
+
+    await db.query(`INSERT INTO audit_log (user_email,role,action) VALUES ($1,$2,$3)`,
+      [req.user.email, req.user.role,
+       `Granted 1-month grace to ${owner.name} until ${graceStr} | WA: ${waResult.ok?'sent':waResult.reason}`]);
+
+    res.json({ ok: true, grace_until: graceStr, wa: waResult });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/superadmin/deactivate/:userId — manually deactivate (suspend) account
+router.post('/deactivate/:userId', requireAdmin, async (req, res) => {
+  try {
+    const owner = (await db.query('SELECT * FROM owners WHERE id=$1', [req.params.userId])).rows[0];
+    if (!owner) return res.status(404).json({ error: 'Owner not found' });
+
+    await db.query(
+      `UPDATE owners SET status='Suspended', updated_at=NOW() WHERE id=$1`,
+      [req.params.userId]
+    );
+    await db.query(`INSERT INTO audit_log (user_email,role,action) VALUES ($1,$2,$3)`,
+      [req.user.email, req.user.role, `Manually suspended ${owner.name} (${owner.email})`]);
+
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/superadmin/reactivate/:userId — reactivate a suspended owner
+router.post('/reactivate/:userId', requireAdmin, async (req, res) => {
+  try {
+    await db.query(
+      `UPDATE owners SET status='Active', updated_at=NOW() WHERE id=$1`,
+      [req.params.userId]
+    );
+    const owner = (await db.query('SELECT name,email FROM owners WHERE id=$1',[req.params.userId])).rows[0];
+    await db.query(`INSERT INTO audit_log (user_email,role,action) VALUES ($1,$2,$3)`,
+      [req.user.email, req.user.role, `Reactivated ${owner?.name} (${owner?.email})`]);
+    res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
