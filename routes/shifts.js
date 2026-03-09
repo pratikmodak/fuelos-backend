@@ -198,6 +198,12 @@ router.post('/', requireAuth, async (req, res) => {
         const pumpRow = await db.query('SELECT name FROM pumps WHERE id=$1', [s.pumpId||s.pump_id]);
         const pumpName = pumpRow.rows[0]?.name || 'Pump';
 
+        // Fetch operator lang_pref for bilingual WA
+        let opLang = 'en';
+        if (s.operatorId || s.operator_id) {
+          const opRow = await db.query('SELECT lang_pref FROM operators WHERE id=$1', [s.operatorId||s.operator_id]);
+          opLang = opRow.rows[0]?.lang_pref || 'en';
+        }
         await wa.notifyShiftSubmitted(ownerPhone, {
           operator:     s.operator,
           shift:        s.shift,
@@ -209,6 +215,7 @@ router.post('/', requireAuth, async (req, res) => {
           card:         s.card||0,
           petrolVol:    s.petrolVol||s.petrol_vol||0,
           dieselVol:    s.dieselVol||s.diesel_vol||0,
+          lang:         opLang,
         });
       } catch (e) {
         console.error('[shifts/wa-notify] ERROR:', e.message, e.stack?.split('\n')[1]);
@@ -251,11 +258,13 @@ router.patch('/:id/confirm', requireAuth, async (req, res) => {
     setImmediate(async () => {
       try {
         const shiftRow = await db.query(
-          `SELECT sr.operator, sr.shift, sr.total_revenue, p.name as pump_name,
-                  o.whatsapp_num
+          `SELECT sr.operator, sr.shift, sr.total_revenue, sr.operator_id,
+                  p.name as pump_name, o.whatsapp_num,
+                  COALESCE(op.lang_pref, 'en') AS op_lang
            FROM shift_reports sr
            JOIN pumps p ON p.id = sr.pump_id
            JOIN owners o ON o.id = sr.owner_id
+           LEFT JOIN operators op ON op.id = sr.operator_id
            WHERE sr.id = $1`, [req.params.id]
         );
         const s = shiftRow.rows[0];
@@ -266,6 +275,7 @@ router.patch('/:id/confirm', requireAuth, async (req, res) => {
           shift:       s.shift,
           confirmedBy: req.body.confirmed_by || 'Manager',
           amount:      s.total_revenue,
+          lang:        s.op_lang || 'en',
         });
       } catch (e) { console.warn('[shifts/confirm/wa]', e.message); }
     });

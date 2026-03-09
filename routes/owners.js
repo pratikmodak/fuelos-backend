@@ -4,6 +4,7 @@ const bcrypt = require('bcryptjs');
 const db = require('../db');
 const { requireAuth, requireOwner, requireOwnerOrManager } = require('../middleware/auth');
 const { logOp } = require('../middleware/audit-middleware');
+const { creditPurchase, creditCollect, shiftConfirm, shiftStatus, resolveLang } = require('../wa-messages');
 
 // GET /api/owners/me
 router.get('/me', requireOwner, async (req, res) => {
@@ -168,6 +169,27 @@ router.patch('/managers/:id', requireOwner, async (req, res) => {
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
+
+// PATCH /api/owners/staff/:role/:id/lang  — set language preference for manager or operator
+// role = 'manager' | 'operator'
+router.patch('/staff/:role/:id/lang', requireOwner, async (req, res) => {
+  try {
+    const { lang }  = req.body; // 'en' | 'mr'
+    const { role, id } = req.params;
+    if (!['en','mr'].includes(lang))          return res.status(400).json({ error: 'lang must be en or mr' });
+    if (!['manager','operator'].includes(role)) return res.status(400).json({ error: 'role must be manager or operator' });
+    const table = role === 'manager' ? 'managers' : 'operators';
+    const ownerId = req.user.id;
+    const r = await db.query(
+      `UPDATE ${table} SET lang_pref=$1 WHERE id=$2 AND owner_id=$3 RETURNING id, name, lang_pref`,
+      [lang, id, ownerId]
+    );
+    if (!r.rows.length) return res.status(404).json({ error: 'Staff not found' });
+    await logOp(req, { category:'staff', action:`Language set to ${lang} for ${role}`, entityType:table, entityId:id, details:{ lang, name: r.rows[0].name } });
+    res.json({ ok: true, lang, name: r.rows[0].name });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 
 module.exports = router;
 
