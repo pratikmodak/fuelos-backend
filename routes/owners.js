@@ -275,24 +275,25 @@ router.get('/credit-customers/:id/transactions', requireOwnerOrManager, async (r
 router.post('/credit-customers/:id/purchase', requireOwnerOrManager, async (req, res) => {
   try {
     await ensureCreditTxnTable();
-    const ownerId = req.user.owner_id || req.user.id;
-    // Block purchase if customer is not Active
+    // Look up customer directly — works for both owner and manager tokens
     const { rows: cust } = await db.query(
-      'SELECT status FROM credit_customers WHERE id=$1 AND owner_id=$2',
-      [req.params.id, ownerId]
+      'SELECT id, owner_id, status FROM credit_customers WHERE id=$1',
+      [req.params.id]
     );
     if (!cust.length) return res.status(404).json({ error: 'Customer not found' });
     if (cust[0].status !== 'Active')
-      return res.status(403).json({ error: `Credit blocked — customer status is "${cust[0].status}". Owner must approve first.` });
+      return res.status(403).json({ error: 'Credit blocked — status: ' + cust[0].status + '. Owner must approve first.' });
+    const ownerId = cust[0].owner_id; // always use the real owner_id from DB
     const { id: txnId, date, fuel, qty, rate, amount, note } = req.body;
+    const txnDate = date || new Date().toISOString().slice(0,10);
     await db.query(
       `INSERT INTO credit_transactions (id,owner_id,customer_id,date,fuel,qty,rate,amount,type,note)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'purchase',$9)`,
-      [txnId, ownerId, req.params.id, date||new Date().toISOString().slice(0,10), fuel, qty||0, rate||0, amount, note||null]
+      [txnId, ownerId, req.params.id, txnDate, fuel, qty||0, rate||0, parseFloat(amount), note||null]
     );
     await db.query(
       `UPDATE credit_customers SET outstanding=outstanding+$1::numeric, last_txn=$2, updated_at=NOW() WHERE id=$3`,
-      [parseFloat(amount), date||new Date().toISOString().slice(0,10), req.params.id]
+      [parseFloat(amount), txnDate, req.params.id]
     );
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -302,12 +303,18 @@ router.post('/credit-customers/:id/purchase', requireOwnerOrManager, async (req,
 router.post('/credit-customers/:id/collect', requireOwnerOrManager, async (req, res) => {
   try {
     await ensureCreditTxnTable();
-    const ownerId = req.user.owner_id || req.user.id;
+    // Get real owner_id from DB — don't trust JWT owner_id (manager tokens may not have it)
+    const { rows: cust } = await db.query(
+      'SELECT owner_id FROM credit_customers WHERE id=$1',
+      [req.params.id]
+    );
+    if (!cust.length) return res.status(404).json({ error: 'Customer not found' });
+    const ownerId = cust[0].owner_id;
     const { id: txnId, amount, note } = req.body;
     await db.query(
       `INSERT INTO credit_transactions (id,owner_id,customer_id,date,amount,type,note)
        VALUES ($1,$2,$3,CURRENT_DATE,$4,'payment',$5)`,
-      [txnId, ownerId, req.params.id, amount, note||null]
+      [txnId, ownerId, req.params.id, parseFloat(amount), note||null]
     );
     await db.query(
       `UPDATE credit_customers SET outstanding=GREATEST(0,outstanding-$1::numeric), last_txn=CURRENT_DATE, updated_at=NOW() WHERE id=$2`,
