@@ -231,17 +231,84 @@ router.post('/config', requireAdmin, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// GET /api/admin/audit
+// GET /api/admin/audit  — combined op_log + audit_log, filterable
 router.get('/audit', requireAdmin, async (req, res) => {
   try {
-    const r = await db.query(
-      'SELECT * FROM audit_log ORDER BY created_at DESC LIMIT 500'
+    const limit    = Math.min(parseInt(req.query.limit  || '500'), 2000);
+    const offset   = parseInt(req.query.offset || '0');
+    const role     = req.query.role     || null;
+    const category = req.query.category || null;
+    const ownerId  = req.query.owner_id || null;
+    const search   = req.query.search   || null;
+
+    // Check if op_log exists yet
+    const hasOpLog = await db.query(`SELECT to_regclass('op_log') AS t`);
+    const opLogExists = !!hasOpLog.rows[0]?.t;
+
+    let rows = [];
+
+    if (opLogExists) {
+      let where = [];
+      let params = [];
+      if (role)     { params.push(role);    where.push(`role=$${params.length}`); }
+      if (category) { params.push(category);where.push(`category=$${params.length}`); }
+      if (ownerId)  { params.push(ownerId); where.push(`owner_id=$${params.length}`); }
+      if (search)   { params.push('%'+search+'%'); where.push(`(action ILIKE $${params.length} OR actor_name ILIKE $${params.length} OR actor_email ILIKE $${params.length})`); }
+      const w = where.length ? 'WHERE ' + where.join(' AND ') : '';
+      params.push(limit, offset);
+      const r = await db.query(
+        `SELECT id, owner_id, owner_name, actor_id, actor_name, actor_email,
+                role, category, action, entity_type, entity_id, details, ip, created_at
+         FROM op_log ${w}
+         ORDER BY created_at DESC
+         LIMIT $${params.length-1} OFFSET $${params.length}`,
+        params
+      );
+      rows = r.rows.map(a => ({
+        id: a.id, source: 'op_log',
+        ownerId: a.owner_id, ownerName: a.owner_name,
+        user: a.actor_email || a.actor_name || a.actor_id,
+        actorName: a.actor_name, actorEmail: a.actor_email,
+        role: a.role, category: a.category,
+        action: a.action,
+        entityType: a.entity_type, entityId: a.entity_id,
+        details: a.details,
+        time: a.created_at, ip: a.ip,
+      }));
+    }
+
+    // Also pull from legacy audit_log (admin actions)
+    const legacyWhere = [];
+    const legacyParams = [];
+    if (role && ['superadmin','admin','system'].includes(role)) {
+      legacyParams.push(role); legacyWhere.push(`role=$${legacyParams.length}`);
+    }
+    if (search) {
+      legacyParams.push('%'+search+'%');
+      legacyWhere.push(`(action ILIKE $${legacyParams.length} OR user_email ILIKE $${legacyParams.length})`);
+    }
+    legacyParams.push(200);
+    const lw = legacyWhere.length ? 'WHERE ' + legacyWhere.join(' AND ') : '';
+    const legacy = await db.query(
+      `SELECT id, user_email, role, action, details, ip, created_at FROM audit_log ${lw} ORDER BY created_at DESC LIMIT $${legacyParams.length}`,
+      legacyParams
     );
-    res.json(r.rows.map(a => ({
-      id: a.id, user: a.user_email, role: a.role,
-      action: a.action, time: a.created_at, ip: a.ip,
-    })));
-  } catch (e) { res.status(500).json({ error: e.message }); }
+    const legacyRows = legacy.rows.map(a => ({
+      id: a.id, source: 'audit_log',
+      user: a.user_email, actorName: a.user_email,
+      role: a.role, category: 'admin',
+      action: a.action, details: a.details,
+      time: a.created_at, ip: a.ip,
+    }));
+
+    // Merge, sort by time desc
+    const all = [...rows, ...legacyRows].sort((a,b) => new Date(b.time) - new Date(a.time)).slice(0, limit);
+
+    res.json({ rows: all, total: all.length, opLogExists });
+  } catch (e) {
+    console.error('[audit]', e.message);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // GET /api/admin/backup

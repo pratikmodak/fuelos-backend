@@ -4,6 +4,7 @@
 // ═══════════════════════════════════════════════════════════
 const router = require('express').Router();
 const db     = require('../db');
+const { logOp } = require('../middleware/audit-middleware');
 const { requireAuth } = require('../middleware/auth');
 
 router.use(requireAuth);
@@ -160,6 +161,7 @@ router.post('/', async (req, res) => {
       name || 'Unknown', role, role === 'manager' ? 'pending' : 'approved',
     ]);
 
+    await logOp(req, { category:'expense', action:'Expense added', entityType:'expense', entityId:rows[0]?.id, details:{ category:rows[0]?.category, amount:rows[0]?.amount, status:rows[0]?.status } });
     res.status(201).json(rows[0]);
   } catch (e) {
     console.error('[expenses POST]', e.message);
@@ -232,6 +234,7 @@ router.delete('/:id', async (req, res) => {
       return res.status(403).json({ error: 'Cannot delete this expense' });
 
     await db.query('DELETE FROM expenses WHERE id=$1 AND owner_id=$2', [req.params.id, owner_id]);
+    await logOp(req, { category:'expense', action:'Expense deleted', entityType:'expense', entityId:req.params.id });
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: e.message });

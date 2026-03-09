@@ -3,6 +3,7 @@ const router = require('express').Router();
 const bcrypt = require('bcryptjs');
 const db = require('../db');
 const { requireAuth, requireOwner, requireOwnerOrManager } = require('../middleware/auth');
+const { logOp } = require('../middleware/audit-middleware');
 
 // GET /api/owners/me
 router.get('/me', requireOwner, async (req, res) => {
@@ -34,6 +35,7 @@ router.patch('/me', requireOwner, async (req, res) => {
     if (!sets.length) return res.json({ ok: true });
     vals.push(req.user.owner_id);
     await db.query(`UPDATE owners SET ${sets.join(',')}, updated_at=NOW() WHERE id=$${vals.length}`, vals);
+    await logOp(req, { category:'credit', action:'Credit collection', entityType:'credit_customer', entityId:req.params.id, details:{ amount:parseFloat(amount) } });
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -295,6 +297,7 @@ router.post('/credit-customers/:id/purchase', requireOwnerOrManager, async (req,
       `UPDATE credit_customers SET outstanding=outstanding+$1::numeric, last_txn=$2, updated_at=NOW() WHERE id=$3`,
       [parseFloat(amount), txnDate, req.params.id]
     );
+    await logOp(req, { category:'credit', action:'Credit purchase', entityType:'credit_customer', entityId:req.params.id, details:{ amount:parseFloat(amount), fuel, qty } });
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });

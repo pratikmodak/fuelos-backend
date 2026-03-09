@@ -2,6 +2,7 @@
 const router = require('express').Router();
 const db = require('../db');
 const { requireAuth } = require('../middleware/auth');
+const { logOp } = require('../middleware/audit-middleware');
 
 // GET /api/shifts
 router.get('/', requireAuth, async (req, res) => {
@@ -176,6 +177,7 @@ router.post('/', requireAuth, async (req, res) => {
       }
     }
 
+    await logOp(req, { category:'shift', action:'Shift submitted', entityType:'shift_report', entityId:s.id, details:{ pumpId:s.pump_id, date:s.date, shift:s.shift } });
     res.json({ ok: true, id: s.id });
 
     // ── Non-blocking WhatsApp notification to owner
@@ -224,6 +226,7 @@ router.delete('/:id', requireAuth, async (req, res) => {
     const ownerId = req.user.owner_id || req.user.id;
     await db.query('DELETE FROM shift_reports WHERE id=$1 AND owner_id=$2', [req.params.id, ownerId]);
     await db.query('DELETE FROM nozzle_readings WHERE shift_id=$1', [req.params.id]);
+    await logOp(req, { category:'shift', action:'Shift deleted', entityType:'shift_report', entityId:req.params.id });
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -373,6 +376,7 @@ router.post('/attendance', requireAuth, async (req, res) => {
          rec.status||'present', rec.note||null, req.user.email||req.user.name||null]
       );
     }
+    await logOp(req, { category:'shift', action:'Attendance recorded', details:{ count:records.length } });
     res.json({ ok: true, saved: records.length });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
