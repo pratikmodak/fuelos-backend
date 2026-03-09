@@ -304,7 +304,7 @@ router.get('/whatsapp-log', requireAdmin, async (req, res) => {
     let params = [];
     if (status)   { params.push(status);   where.push(`w.status=$${params.length}`); }
     if (category) { params.push(category); where.push(`w.category=$${params.length}`); }
-    if (ownerId)  { params.push(ownerId);  where.push(`w.owner_id=$${params.length}`); }
+    if (ownerId)  { params.push(ownerId);  where.push(`w.owner_id=$${params.length}::text`); }
     if (role)     { params.push(role);     where.push(`w.sender_role=$${params.length}`); }
 
     const whereClause = where.length ? 'WHERE ' + where.join(' AND ') : '';
@@ -323,7 +323,7 @@ router.get('/whatsapp-log', requireAdmin, async (req, res) => {
         w.reply_text, w.reply_at, w.delivered_at, w.read_at, w.created_at,
         o.name AS owner_name, o.email AS owner_email
       FROM wa_messages w
-      LEFT JOIN owners o ON o.id = w.owner_id
+      LEFT JOIN owners o ON o.id::text = w.owner_id
       ${whereClause}
       ORDER BY w.created_at DESC
       LIMIT $${params.length - 1} OFFSET $${params.length}
