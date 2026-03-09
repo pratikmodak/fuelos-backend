@@ -8,6 +8,7 @@
 // ═══════════════════════════════════════════════════════════
 
 const db = require('./db');
+const { waMessages, resolveLang } = require('./wa-messages');
 
 // IST = UTC+5:30 → 12:01 AM IST = 18:31 UTC
 const SCHEDULE_HOUR_UTC   = 18;
@@ -268,29 +269,11 @@ async function sendGraceWA(owner, daysLeftInGrace) {
     console.log('[Grace] WA credentials missing — skipping for', owner.name);
     return;
   }
-  const raw   = (owner.whatsapp_num || owner.phone || '').replace(/\D/g, '');
+    const raw   = (owner.whatsapp_num || owner.phone || '').replace(/\D/g, '');
   if (!raw)   { console.log('[Grace] No phone for', owner.name); return; }
   const to    = raw.startsWith('91') ? raw : '91' + raw;
-  const graceDate = new Date(owner.grace_until).toLocaleDateString('en-IN', {day:'numeric',month:'long',year:'numeric'});
-  const expDate   = new Date(owner.end_date).toLocaleDateString('en-IN',    {day:'numeric',month:'long',year:'numeric'});
-
-  let urgencyLine = '';
-  if      (daysLeftInGrace <= 5)  urgencyLine = '🚨 *URGENT — Only ' + daysLeftInGrace + ' days left!*';
-  else if (daysLeftInGrace <= 15) urgencyLine = '⚠️ *' + daysLeftInGrace + ' days left in your grace period*';
-  else                            urgencyLine = '📅 *Friendly reminder — ' + daysLeftInGrace + ' days remaining*';
-
-  const body =
-    '🔔 *FuelOS Subscription Grace Period Notice*\n' +
-    'Hi ' + owner.name + ',\n\n' +
-    urgencyLine + '\n\n' +
-    'Your *' + owner.plan + '* plan expired on ' + expDate + '.\n' +
-    '✅ Your account is still *fully active* until *' + graceDate + '*\n\n' +
-    '💳 Please renew before ' + graceDate + ' to avoid suspension:\n' +
-    '👉 Login → Billing → Renew Plan\n\n' +
-    (daysLeftInGrace <= 5
-      ? '⛔ After ' + graceDate + ', access will be suspended automatically.\n\nPlease act now. Thank you!'
-      : 'Renew early to keep your pumps running without interruption. 🙏 — FuelOS Team'
-    );
+  const lang  = resolveLang(owner, 'en');
+  const body  = waMessages.graceAlert(owner, daysLeftInGrace, lang);
 
   try {
     const r = await fetch('https://graph.facebook.com/v19.0/' + WA_PHONE_ID + '/messages', {

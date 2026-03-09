@@ -1,6 +1,7 @@
 // routes/superadmin.js — SuperAdmin / Monitor / Caller portal APIs
 const router = require('express').Router();
 const db = require('../db');
+const { staffFollowup, resolveLang } = require('../wa-messages');
 const { requireAdmin } = require('../middleware/auth');
 
 // ════════════════════════════════════════════════
@@ -560,33 +561,40 @@ router.post('/outreach-log', requireAdmin, async (req, res) => {
 const WA_TOKEN_SA    = process.env.WA_TOKEN;
 const WA_PHONE_ID_SA = process.env.WA_PHONE_ID;
 
+
+function buildRenewalMsg(owner) {
+  const expDate = owner.end_date
+    ? new Date(owner.end_date).toLocaleDateString('en-IN', {day:'numeric',month:'long',year:'numeric'})
+    : '---';
+  const graceDate = owner.grace_until
+    ? new Date(owner.grace_until).toLocaleDateString('en-IN', {day:'numeric',month:'long',year:'numeric'})
+    : null;
+  const lines = [
+    '\uD83D\uDD14 *FuelOS Subscription Renewal Reminder*',
+    '',
+    'Hi ' + owner.name + ',',
+    '',
+    '\u26A0\uFE0F Your *' + owner.plan + '* plan expired on *' + expDate + '*.',
+  ];
+  if (graceDate) {
+    lines.push('\u2705 Your account is active during grace period until *' + graceDate + '*.');
+    lines.push('\uD83D\uDCB3 Please renew before ' + graceDate + ' to avoid suspension.');
+  } else {
+    lines.push('\u2757 Please renew your subscription immediately to avoid service interruption.');
+  }
+  lines.push('', '\uD83D\uDC49 Login \u2192 Billing \u2192 Renew Plan', '', 'Thank you! \uD83D\uDE4F - FuelOS Team');
+  return lines.join('\n');
+}
+
+
 async function sendRenewalWA(owner, customMsg) {
   const rawPhone = owner.whatsapp_num || owner.phone || '';
   const phone    = rawPhone.replace(/\D/g,'');
   if (!phone) return { ok: false, reason: 'no_phone' };
   if (!WA_TOKEN_SA || !WA_PHONE_ID_SA) return { ok: false, reason: 'no_credentials' };
 
-  const to = phone.startsWith('91') ? phone : '91' + phone;
-  const graceDate = owner.grace_until
-    ? new Date(owner.grace_until).toLocaleDateString('en-IN',{day:'numeric',month:'long',year:'numeric'})
-    : null;
-  const expDate = owner.end_date
-    ? new Date(owner.end_date).toLocaleDateString('en-IN',{day:'numeric',month:'long',year:'numeric'})
-    : '—';
-
-  const body = customMsg || [
-    '\U0001f514 *FuelOS Subscription Renewal Reminder*',
-    'Hi ' + owner.name + ',',
-    '',
-    '\u26a0\ufe0f Your *' + owner.plan + '* plan expired on ' + expDate + '.',
-    graceDate
-      ? ('\u2705 Your account is active during grace period until *' + graceDate + '*.\n\n\U0001f4b3 Please renew before ' + graceDate + ' to avoid suspension.')
-      : '\u2757 Please renew your subscription immediately to avoid service interruption.',
-    '',
-    '\U0001f449 Login \u2192 Billing \u2192 Renew Plan',
-    '',
-    'Thank you! \U0001f64f \u2014 FuelOS Team',
-  ].join('\n');
+  const to   = phone.startsWith('91') ? phone : '91' + phone;
+  const body = customMsg || buildRenewalMsg(owner);
 
   try {
     const r = await fetch('https://graph.facebook.com/v19.0/' + WA_PHONE_ID_SA + '/messages', {
@@ -610,6 +618,21 @@ async function sendRenewalWA(owner, customMsg) {
     return { ok: false, reason: e.message };
   }
 }
+
+
+// PATCH /api/superadmin/contacts/:userId/lang — set language preference
+router.patch('/contacts/:userId/lang', requireAdmin, async (req, res) => {
+  try {
+    const { lang } = req.body; // 'en' | 'mr'
+    if (!['en','mr'].includes(lang)) return res.status(400).json({ error: 'lang must be en or mr' });
+    const r = await db.query(
+      `UPDATE owners SET lang_pref=$1, updated_at=NOW() WHERE id=$2 RETURNING id, lang_pref`,
+      [lang, req.params.userId]
+    );
+    if (!r.rows.length) return res.status(404).json({ error: 'Owner not found' });
+    res.json({ ok: true, lang });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
 
 // POST /api/superadmin/remind/:userId — manual WA renewal reminder
 router.post('/remind/:userId', requireAdmin, async (req, res) => {
@@ -637,7 +660,9 @@ router.post('/staff-followup/:staffId', requireAdmin, async (req, res) => {
 
     const staffRes = await db.query(
       `SELECT s.id, s.name, s.phone, s.email, s.owner_id,
-              o.name AS owner_name, o.whatsapp_num, o.whatsapp
+              COALESCE(s.lang_pref, 'en') AS lang_pref,
+              o.name AS owner_name, o.whatsapp_num, o.whatsapp,
+              COALESCE(o.lang_pref, 'en') AS owner_lang_pref
        FROM ${table} s
        LEFT JOIN owners o ON o.id = s.owner_id
        WHERE s.id = $1`,
@@ -652,13 +677,8 @@ router.post('/staff-followup/:staffId', requireAdmin, async (req, res) => {
     if (!phone) return res.status(400).json({ error: 'No phone number on record for this staff member' });
 
     const staffRole = role === 'manager' ? 'Manager' : 'Operator';
-    const msg = [
-      `Hi ${staff.name},`,
-      `This is a follow-up from ${staff.owner_name || 'FuelOS'}.`,
-      `We noticed you haven't logged any shift activity recently.`,
-      `Please log in to FuelOS and submit your shift report.`,
-      `Contact your owner if you need help.`
-    ].join('\n');
+    const staffLang = resolveLang(staff);
+    const msg = staffFollowup(staff, staff.owner_name, staffLang);
 
     // Send via Meta WhatsApp API
     let waResult = { ok: false, reason: 'WA not configured' };
