@@ -35,24 +35,32 @@ router.post('/', express.json(), async (req, res) => {
         for (const status of (val?.statuses || [])) {
           const s = status.status; // sent | delivered | read | failed
           const metaId = status.id;
+          const toPhone = status.recipient_id || null; // phone number that received
           try {
+            // Match by meta_msg_id (exact), fallback to most recent sent msg to that phone
+            const matchClause = metaId
+              ? `(meta_msg_id=$1 OR (to_phone=$2 AND status='sent' AND id=(SELECT id FROM wa_messages WHERE to_phone=$2 AND (status='sent' OR status='skipped') ORDER BY created_at DESC LIMIT 1)))`
+              : `to_phone=$2 AND id=(SELECT id FROM wa_messages WHERE to_phone=$2 ORDER BY created_at DESC LIMIT 1)`;
+            const matchParams = metaId ? [metaId, toPhone] : [null, toPhone];
+
             if (s === 'delivered') {
               await db.query(
-                `UPDATE wa_messages SET status='delivered', delivered_at=NOW() WHERE meta_msg_id=$1`,
-                [metaId]
+                `UPDATE wa_messages SET status='delivered', delivered_at=NOW(), meta_msg_id=COALESCE(meta_msg_id,$1) WHERE ${matchClause}`,
+                [metaId, ...matchParams]
               );
             } else if (s === 'read') {
               await db.query(
-                `UPDATE wa_messages SET status='read', read_at=NOW() WHERE meta_msg_id=$1`,
-                [metaId]
+                `UPDATE wa_messages SET status='read', read_at=NOW(), meta_msg_id=COALESCE(meta_msg_id,$1) WHERE ${matchClause}`,
+                [metaId, ...matchParams]
               );
             } else if (s === 'failed') {
               const errMsg = status.errors?.[0]?.message || 'Delivery failed';
               await db.query(
-                `UPDATE wa_messages SET status='failed', error_text=$1 WHERE meta_msg_id=$2`,
-                [errMsg, metaId]
+                `UPDATE wa_messages SET status='failed', error_text=$3 WHERE ${matchClause}`,
+                [...matchParams, errMsg]
               );
             }
+            console.log('[WH] status', s, 'for meta_id:', metaId, 'phone:', toPhone);
           } catch(e) { console.warn('[WH] status update error:', e.message); }
         }
 
