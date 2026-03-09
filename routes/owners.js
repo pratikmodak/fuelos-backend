@@ -226,13 +226,32 @@ router.post('/credit-customers', requireOwnerOrManager, async (req, res) => {
   try {
     const ownerId = req.user.owner_id || req.user.id;
     const { id, name, phone, pumpId, limit } = req.body;
-    await db.query(
+    // Managers add in Pending state — owner must approve before credit can be used
+    const initialStatus = req.user.role === 'manager' ? 'Pending' : 'Active';
+    const { rows } = await db.query(
       `INSERT INTO credit_customers (id,owner_id,pump_id,name,phone,credit_limit,outstanding,last_txn,status)
-       VALUES ($1,$2,$3,$4,$5,$6,0,CURRENT_DATE,'Active')
-       ON CONFLICT (id) DO NOTHING`,
-      [id, ownerId, pumpId||null, name, phone||null, limit||0]
+       VALUES ($1,$2,$3,$4,$5,$6,0,CURRENT_DATE,$7)
+       ON CONFLICT (id) DO NOTHING
+       RETURNING *`,
+      [id, ownerId, pumpId||null, name, phone||null, limit||0, initialStatus]
     );
-    res.json({ ok: true });
+    res.json({ ok: true, status: initialStatus, pending: initialStatus === 'Pending' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// PATCH /api/owners/credit-customers/:id/status  (owner only — approve or reject)
+router.patch('/credit-customers/:id/status', requireOwner, async (req, res) => {
+  try {
+    const ownerId = req.user.id;
+    const { status } = req.body; // 'Active' or 'Rejected'
+    if (!['Active', 'Rejected', 'Inactive'].includes(status))
+      return res.status(400).json({ error: 'Invalid status' });
+    const { rowCount } = await db.query(
+      `UPDATE credit_customers SET status=$1, updated_at=NOW() WHERE id=$2 AND owner_id=$3`,
+      [status, req.params.id, ownerId]
+    );
+    if (!rowCount) return res.status(404).json({ error: 'Customer not found' });
+    res.json({ ok: true, status });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -257,6 +276,14 @@ router.post('/credit-customers/:id/purchase', requireOwnerOrManager, async (req,
   try {
     await ensureCreditTxnTable();
     const ownerId = req.user.owner_id || req.user.id;
+    // Block purchase if customer is not Active
+    const { rows: cust } = await db.query(
+      'SELECT status FROM credit_customers WHERE id=$1 AND owner_id=$2',
+      [req.params.id, ownerId]
+    );
+    if (!cust.length) return res.status(404).json({ error: 'Customer not found' });
+    if (cust[0].status !== 'Active')
+      return res.status(403).json({ error: `Credit blocked — customer status is "${cust[0].status}". Owner must approve first.` });
     const { id: txnId, date, fuel, qty, rate, amount, note } = req.body;
     await db.query(
       `INSERT INTO credit_transactions (id,owner_id,customer_id,date,fuel,qty,rate,amount,type,note)
