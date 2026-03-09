@@ -1,81 +1,85 @@
-// routes/whatsapp-webhook.js
-// Meta WhatsApp Cloud API webhook — verification + incoming messages
+// FuelOS v3 — WhatsApp Webhook — delivery status + reply logging
 const express = require('express');
 const router  = express.Router();
 const db      = require('../db');
 
-// Helper: get config from DB
 const getCfg = async (key) => {
-  try {
-    const r = await db.query('SELECT value FROM app_config WHERE key=$1', [key]);
-    return r.rows[0]?.value || process.env[key.toUpperCase()] || '';
-  } catch { return ''; }
+  try { const r = await db.query('SELECT value FROM app_config WHERE key=$1',[key]); return r.rows[0]?.value || process.env[key.toUpperCase()] || ''; }
+  catch { return ''; }
 };
 
-// ── GET /webhook/whatsapp
-// Meta calls this to verify the webhook endpoint during setup
-// Must respond with hub.challenge when hub.verify_token matches
+// GET — Meta webhook verification
 router.get('/', async (req, res) => {
   const mode      = req.query['hub.mode'];
   const token     = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
-
-  const savedToken = await getCfg('wa_verify_token');
-  const verifyToken = savedToken || process.env.WA_VERIFY_TOKEN || 'fuelos_webhook_verify';
-
+  const verifyToken = (await getCfg('wa_verify_token')) || process.env.WA_VERIFY_TOKEN || 'fuelos_webhook_verify';
   if (mode === 'subscribe' && token === verifyToken) {
-    console.log('[WhatsApp Webhook] ✓ Verified');
+    console.log('[WhatsApp Webhook] Verified');
     return res.status(200).send(challenge);
   }
-  console.warn('[WhatsApp Webhook] ✗ Verification failed — token mismatch');
   res.status(403).json({ error: 'Verification failed' });
 });
 
-// ── POST /webhook/whatsapp
-// Meta sends incoming messages and status updates here
+// POST — incoming messages and status updates from Meta
 router.post('/', express.json(), async (req, res) => {
   try {
     const body = req.body;
-    if (body?.object !== 'whatsapp_business_account') {
-      return res.sendStatus(404);
-    }
+    if (body?.object !== 'whatsapp_business_account') return res.sendStatus(404);
 
     for (const entry of (body.entry || [])) {
       for (const change of (entry.changes || [])) {
         const val = change.value;
 
-        // Incoming messages
-        for (const msg of (val?.messages || [])) {
-          console.log(`[WhatsApp] Message from ${msg.from}: ${msg.text?.body || '[media]'}`);
-          // Store in notifications log
-          try {
-            await db.query(
-              `INSERT INTO notifications (type, recipient, message, status, created_at)
-               VALUES ('whatsapp_inbound', $1, $2, 'received', NOW())
-               ON CONFLICT DO NOTHING`,
-              [msg.from, msg.text?.body || '[media]']
-            );
-          } catch {}
-        }
-
-        // Delivery status updates
+        // Delivery / read status updates — update existing wa_messages row
         for (const status of (val?.statuses || [])) {
           const s = status.status; // sent | delivered | read | failed
+          const metaId = status.id;
           try {
+            if (s === 'delivered') {
+              await db.query(
+                `UPDATE wa_messages SET status='delivered', delivered_at=NOW() WHERE meta_msg_id=$1`,
+                [metaId]
+              );
+            } else if (s === 'read') {
+              await db.query(
+                `UPDATE wa_messages SET status='read', read_at=NOW() WHERE meta_msg_id=$1`,
+                [metaId]
+              );
+            } else if (s === 'failed') {
+              const errMsg = status.errors?.[0]?.message || 'Delivery failed';
+              await db.query(
+                `UPDATE wa_messages SET status='failed', error_text=$1 WHERE meta_msg_id=$2`,
+                [errMsg, metaId]
+              );
+            }
+          } catch(e) { console.warn('[WH] status update error:', e.message); }
+        }
+
+        // Incoming messages (customer replies) — store as reply on outbound row
+        for (const msg of (val?.messages || [])) {
+          const fromPhone = msg.from;
+          const replyText = msg.text?.body || '[media/other]';
+          console.log('[WhatsApp] Reply from', fromPhone, ':', replyText.slice(0,80));
+          try {
+            // Attach reply to the most recent outbound message to this phone
             await db.query(
-              `UPDATE notifications SET status=$1, updated_at=NOW()
-               WHERE meta_message_id=$2`,
-              [s, status.id]
-            ).catch(() => {});
-          } catch {}
+              `UPDATE wa_messages SET reply_text=$1, reply_at=NOW()
+               WHERE id = (
+                 SELECT id FROM wa_messages
+                 WHERE to_phone=$2
+                 ORDER BY created_at DESC LIMIT 1
+               )`,
+              [replyText, fromPhone]
+            );
+          } catch(e) { console.warn('[WH] reply update error:', e.message); }
         }
       }
     }
-
     res.sendStatus(200);
   } catch (e) {
     console.error('[WhatsApp Webhook] Error:', e.message);
-    res.sendStatus(200); // always 200 to Meta or it retries
+    res.sendStatus(200); // always 200 to Meta
   }
 });
 

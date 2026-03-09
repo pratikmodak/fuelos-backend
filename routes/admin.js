@@ -283,10 +283,80 @@ router.patch('/shifts/:id', requireAdmin, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// GET /api/whatsapp/log
+// GET /api/admin/whatsapp-log
+// Query params: limit, offset, status, category, owner_id, role
 router.get('/whatsapp-log', requireAdmin, async (req, res) => {
-  // Placeholder — integrate with actual WA provider for logs
-  res.json([]);
+  try {
+    const limit    = Math.min(parseInt(req.query.limit  || '200'), 500);
+    const offset   = parseInt(req.query.offset || '0');
+    const status   = req.query.status   || null;
+    const category = req.query.category || null;
+    const ownerId  = req.query.owner_id || null;
+    const role     = req.query.role     || null;
+
+    // Check table exists first
+    const tableCheck = await db.query(
+      `SELECT to_regclass('wa_messages') AS t`
+    );
+    if (!tableCheck.rows[0]?.t) return res.json({ rows: [], total: 0 });
+
+    let where = [];
+    let params = [];
+    if (status)   { params.push(status);   where.push(`w.status=$${params.length}`); }
+    if (category) { params.push(category); where.push(`w.category=$${params.length}`); }
+    if (ownerId)  { params.push(ownerId);  where.push(`w.owner_id=$${params.length}`); }
+    if (role)     { params.push(role);     where.push(`w.sender_role=$${params.length}`); }
+
+    const whereClause = where.length ? 'WHERE ' + where.join(' AND ') : '';
+
+    // Total count
+    const countRes = await db.query(`SELECT COUNT(*) FROM wa_messages w ${whereClause}`, params);
+    const total = parseInt(countRes.rows[0]?.count || 0);
+
+    // Data with owner info joined
+    params.push(limit, offset);
+    const r = await db.query(`
+      SELECT
+        w.id, w.owner_id, w.sender_id, w.sender_role, w.sender_name,
+        w.to_phone, w.customer_name, w.message, w.category,
+        w.status, w.meta_msg_id, w.error_text,
+        w.reply_text, w.reply_at, w.delivered_at, w.read_at, w.created_at,
+        o.name AS owner_name, o.email AS owner_email
+      FROM wa_messages w
+      LEFT JOIN owners o ON o.id = w.owner_id
+      ${whereClause}
+      ORDER BY w.created_at DESC
+      LIMIT $${params.length - 1} OFFSET $${params.length}
+    `, params);
+
+    res.json({
+      rows: r.rows.map(row => ({
+        id:           row.id,
+        ownerId:      row.owner_id,
+        ownerName:    row.owner_name || row.owner_id || '—',
+        ownerEmail:   row.owner_email || '—',
+        senderId:     row.sender_id,
+        senderRole:   row.sender_role,
+        senderName:   row.sender_name,
+        phone:        row.to_phone,
+        customerName: row.customer_name,
+        msg:          row.message,
+        category:     row.category,
+        status:       row.status,
+        metaMsgId:    row.meta_msg_id,
+        errorText:    row.error_text,
+        replyText:    row.reply_text,
+        replyAt:      row.reply_at,
+        deliveredAt:  row.delivered_at,
+        readAt:       row.read_at,
+        date:         row.created_at,
+      })),
+      total,
+    });
+  } catch (e) {
+    console.error('[waLog]', e.message);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // POST /api/admin/test-whatsapp — send a real test message to verify integration
