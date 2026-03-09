@@ -70,7 +70,7 @@ router.get('/activity', requireAdmin, async (req, res) => {
       db.query(`
         SELECT
           m.id, m.name, m.email, m.phone, m.owner_id, m.pump_id,
-          m.shift, m.status,
+          m.shift, m.status, COALESCE(m.lang_pref,'en') AS lang_pref,
           o.name  AS owner_name,
           p.name  AS pump_name,
           'Manager' AS role,
@@ -92,7 +92,7 @@ router.get('/activity', requireAdmin, async (req, res) => {
       db.query(`
         SELECT
           op.id, op.name, op.email, op.phone, op.owner_id, op.pump_id,
-          op.shift, op.status, op.points, op.streak,
+          op.shift, op.status, op.points, op.streak, COALESCE(op.lang_pref,'en') AS lang_pref,
           o.name  AS owner_name,
           p.name  AS pump_name,
           'Operator' AS role,
@@ -163,6 +163,7 @@ router.get('/activity', requireAdmin, async (req, res) => {
         ownerName:    u.owner_name || '—',
         ownerId:      String(u.owner_id),
         shift:        u.shift,
+        lang_pref:    u.lang_pref || 'en',
         last_login:   u.last_active || null,
         days_inactive: daysInactive === 999 ? null : daysInactive,
         logins7d:     parseInt(u.logins7d || 0),
@@ -650,6 +651,81 @@ router.post('/remind/:userId', requireAdmin, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+
+
+// POST /api/superadmin/bulk-followup — send WA to multiple inactive staff
+// body: { staffList: [{ id, role, name, phone, owner_name, lang_pref }] }
+router.post('/bulk-followup', requireAdmin, async (req, res) => {
+  try {
+    const { staffList = [] } = req.body;
+    if (!staffList.length) return res.status(400).json({ error: 'staffList is empty' });
+
+    const WA_TOKEN    = process.env.WA_TOKEN;
+    const WA_PHONE_ID = process.env.WA_PHONE_ID;
+    const results = [];
+
+    for (const staff of staffList) {
+      const phone = (staff.phone || '').replace(/\D/g, '');
+      if (!phone) { results.push({ id: staff.id, name: staff.name, ok: false, reason: 'no_phone' }); continue; }
+      const to   = phone.startsWith('91') ? phone : '91' + phone;
+      const lang = staff.lang_pref || 'en';
+      const msg  = staffFollowup(staff, staff.owner_name, lang);
+
+      let waResult = { ok: false, reason: 'WA not configured' };
+      if (WA_TOKEN && WA_PHONE_ID) {
+        try {
+          const waRes = await fetch(
+            `https://graph.facebook.com/v18.0/${WA_PHONE_ID}/messages`,
+            {
+              method: 'POST',
+              headers: { Authorization: `Bearer ${WA_TOKEN}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ messaging_product: 'whatsapp', to, type: 'text', text: { body: msg } })
+            }
+          );
+          const d = await waRes.json();
+          waResult = d.messages?.length
+            ? { ok: true, meta_msg_id: d.messages[0].id }
+            : { ok: false, reason: d.error?.message || 'Unknown WA error' };
+        } catch (err) { waResult = { ok: false, reason: err.message }; }
+
+        // Log to wa_messages
+        try {
+          await db.query(
+            `INSERT INTO wa_messages (id,owner_id,sender_id,sender_role,sender_name,to_phone,customer_name,message,category,status,meta_msg_id,error_text)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'other',$9,$10,$11)`,
+            [
+              'wam_' + Date.now() + '_' + staff.id.slice(0,6),
+              String(staff.owner_id || ''),
+              req.user.id || req.user.email,
+              req.user.role,
+              req.user.name || req.user.email,
+              to, staff.name, msg,
+              waResult.ok ? 'sent' : 'failed',
+              waResult.meta_msg_id || null,
+              waResult.ok ? null : waResult.reason,
+            ]
+          );
+        } catch (_) {}
+      }
+
+      results.push({ id: staff.id, name: staff.name, phone: to, ...waResult });
+      // Small delay to avoid Meta rate limits
+      await new Promise(r => setTimeout(r, 300));
+    }
+
+    const sent   = results.filter(r => r.ok).length;
+    const failed = results.filter(r => !r.ok).length;
+    await db.query(
+      `INSERT INTO audit_log (user_email,role,action) VALUES ($1,$2,$3)`,
+      [req.user.email, req.user.role, `Bulk WA follow-up → ${sent} sent, ${failed} failed of ${staffList.length} staff`]
+    );
+
+    res.json({ ok: true, sent, failed, total: staffList.length, results });
+  } catch (e) {
+    console.error('[bulk-followup]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // POST /api/superadmin/staff-followup/:staffId — send WA to a manager or operator
 // staffId is a manager or operator UUID, role = 'manager' | 'operator'
