@@ -40,7 +40,14 @@ const logOp = async (req, opts = {}) => {
     const u = req.user || {};
     const ownerId   = opts.ownerId   || u.owner_id || (u.role === 'owner' ? u.id : null);
     const ownerName = opts.ownerName || u.owner_name || null;
-    const ip        = req.headers['x-forwarded-for']?.split(',')[0] || req.socket?.remoteAddress || null;
+    // req.ip works correctly after app.set('trust proxy', true) in server.js
+    // fallback chain for environments without proxy config
+    const ip = req.ip
+      || req.headers['x-forwarded-for']?.split(',')[0]?.trim()
+      || req.headers['x-real-ip']
+      || req.connection?.remoteAddress
+      || req.socket?.remoteAddress
+      || null;
 
     await db.query(
       `INSERT INTO op_log

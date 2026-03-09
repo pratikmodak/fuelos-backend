@@ -257,23 +257,33 @@ router.get('/audit', requireAdmin, async (req, res) => {
       const w = where.length ? 'WHERE ' + where.join(' AND ') : '';
       params.push(limit, offset);
       const r = await db.query(
-        `SELECT id, owner_id, owner_name, actor_id, actor_name, actor_email,
-                role, category, action, entity_type, entity_id, details, ip, created_at
-         FROM op_log ${w}
-         ORDER BY created_at DESC
+        `SELECT op.id, op.owner_id, op.owner_name, op.actor_id, op.actor_name, op.actor_email,
+                op.role, op.category, op.action, op.entity_type, op.entity_id,
+                op.details, op.ip, op.created_at,
+                COALESCE(op.owner_name, o.name) AS resolved_owner_name
+         FROM op_log op
+         LEFT JOIN owners o ON o.id::text = op.owner_id
+         ${w}
+         ORDER BY op.created_at DESC
          LIMIT $${params.length-1} OFFSET $${params.length}`,
         params
       );
       rows = r.rows.map(a => ({
-        id: a.id, source: 'op_log',
-        ownerId: a.owner_id, ownerName: a.owner_name,
-        user: a.actor_email || a.actor_name || a.actor_id,
-        actorName: a.actor_name, actorEmail: a.actor_email,
-        role: a.role, category: a.category,
-        action: a.action,
-        entityType: a.entity_type, entityId: a.entity_id,
-        details: a.details,
-        time: a.created_at, ip: a.ip,
+        id:          a.id,
+        source:      'op_log',
+        ownerId:     a.owner_id,
+        ownerName:   a.resolved_owner_name || a.owner_id || '—',
+        user:        a.actor_email || a.actor_name || a.actor_id,
+        actorName:   a.actor_name  || a.actor_email || '—',
+        actorEmail:  a.actor_email || null,
+        role:        a.role,
+        category:    a.category    || 'other',
+        action:      a.action,
+        entityType:  a.entity_type || null,
+        entityId:    a.entity_id   || null,
+        details:     a.details     || {},
+        time:        a.created_at,
+        ip:          a.ip          || null,
       }));
     }
 

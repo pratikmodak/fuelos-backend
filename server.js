@@ -11,6 +11,7 @@ const db      = require('./db');
 const wsManager = require('./websocket');
 
 const app = express();
+app.set('trust proxy', true); // Required on Render to get real client IP from x-forwarded-for
 
 // ── CORS — allow your Vercel frontend + localhost
 const allowedOrigins = [
