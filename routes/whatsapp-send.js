@@ -6,8 +6,8 @@
 const router = require('express').Router();
 const { requireAuth } = require('../middleware/auth');
 
-const WA_TOKEN   = process.env.WA_TOKEN;        // Meta permanent token
-const WA_PHONE_ID = process.env.WA_PHONE_ID;    // Meta phone number ID
+const WA_TOKEN    = process.env.WA_TOKEN;     // Meta permanent token
+const WA_PHONE_ID = process.env.WA_PHONE_ID;  // Meta phone number ID
 
 router.post('/send', requireAuth, async (req, res) => {
   const { to, message } = req.body;
@@ -21,28 +21,27 @@ router.post('/send', requireAuth, async (req, res) => {
   }
 
   try {
-    const r = await fetch(
-      ,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: ,
-        },
-        body: JSON.stringify({
-          messaging_product: 'whatsapp',
-          to,
-          type: 'text',
-          text: { body: message },
-        }),
-      }
-    );
+    const url = 'https://graph.facebook.com/v19.0/' + WA_PHONE_ID + '/messages';
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + WA_TOKEN,
+      },
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        to,
+        type: 'text',
+        text: { body: message },
+      }),
+    });
+
     const data = await r.json();
     if (!r.ok) {
       console.error('[WA] Meta API error:', data);
-      return res.status(502).json({ error: data?.error?.message || 'Meta API error' });
+      return res.status(502).json({ error: (data && data.error && data.error.message) || 'Meta API error' });
     }
-    console.log('[WA] Sent to', to, '— id:', data?.messages?.[0]?.id);
+    console.log('[WA] Sent to', to);
     res.json({ ok: true, meta: data });
   } catch (e) {
     console.error('[WA] send error:', e.message);
