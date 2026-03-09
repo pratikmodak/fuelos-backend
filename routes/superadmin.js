@@ -627,6 +627,110 @@ router.post('/remind/:userId', requireAdmin, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+
+// POST /api/superadmin/staff-followup/:staffId — send WA to a manager or operator
+// staffId is a manager or operator UUID, role = 'manager' | 'operator'
+router.post('/staff-followup/:staffId', requireAdmin, async (req, res) => {
+  try {
+    const { role } = req.body; // 'manager' or 'operator'
+    const table = role === 'manager' ? 'managers' : 'operators';
+
+    const staffRes = await db.query(
+      `SELECT s.id, s.name, s.phone, s.email, s.owner_id,
+              o.name AS owner_name, o.whatsapp_num, o.whatsapp
+       FROM ${table} s
+       LEFT JOIN owners o ON o.id = s.owner_id
+       WHERE s.id = $1`,
+      [req.params.staffId]
+    );
+
+    const staff = staffRes.rows[0];
+    if (!staff) return res.status(404).json({ error: 'Staff member not found' });
+
+    // Send WA to staff member's phone if available, otherwise owner's phone
+    const phone = staff.phone || staff.whatsapp_num;
+    if (!phone) return res.status(400).json({ error: 'No phone number on record for this staff member' });
+
+    const staffRole = role === 'manager' ? 'Manager' : 'Operator';
+    const msg = [
+      `Hi ${staff.name},`,
+      `This is a follow-up from ${staff.owner_name || 'FuelOS'}.`,
+      `We noticed you haven't logged any shift activity recently.`,
+      `Please log in to FuelOS and submit your shift report.`,
+      `Contact your owner if you need help.`
+    ].join('\n');
+
+    // Send via Meta WhatsApp API
+    let waResult = { ok: false, reason: 'WA not configured' };
+    const WA_TOKEN    = process.env.WA_TOKEN;
+    const WA_PHONE_ID = process.env.WA_PHONE_ID;
+
+    if (WA_TOKEN && WA_PHONE_ID) {
+      try {
+        const waRes = await fetch(
+          `https://graph.facebook.com/v18.0/${WA_PHONE_ID}/messages`,
+          {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${WA_TOKEN}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              messaging_product: 'whatsapp',
+              to: phone.replace(/\D/g, ''),
+              type: 'text',
+              text: { body: msg }
+            })
+          }
+        );
+        const waData = await waRes.json();
+        waResult = waData.messages?.length
+          ? { ok: true, meta_msg_id: waData.messages[0].id }
+          : { ok: false, reason: waData.error?.message || 'Unknown WA error' };
+      } catch (err) {
+        waResult = { ok: false, reason: err.message };
+      }
+
+      // Log to wa_messages
+      try {
+        await db.query(`
+          CREATE TABLE IF NOT EXISTS wa_messages (
+            id TEXT PRIMARY KEY, owner_id TEXT, sender_id TEXT, sender_role TEXT,
+            sender_name TEXT, to_phone TEXT, customer_name TEXT, message TEXT,
+            category TEXT DEFAULT 'other', status TEXT DEFAULT 'sent',
+            meta_msg_id TEXT, error_text TEXT, created_at TIMESTAMPTZ DEFAULT NOW()
+          )
+        `);
+        await db.query(
+          `INSERT INTO wa_messages (id,owner_id,sender_id,sender_role,sender_name,to_phone,customer_name,message,category,status,meta_msg_id,error_text)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'other',$9,$10,$11)`,
+          [
+            'wam_' + Date.now(),
+            String(staff.owner_id),
+            req.user.id || req.user.email,
+            req.user.role,
+            req.user.name || req.user.email,
+            phone,
+            staff.name,
+            msg,
+            waResult.ok ? 'sent' : 'failed',
+            waResult.meta_msg_id || null,
+            waResult.ok ? null : waResult.reason,
+          ]
+        );
+      } catch (_) {}
+    }
+
+    await db.query(
+      `INSERT INTO audit_log (user_email,role,action) VALUES ($1,$2,$3)`,
+      [req.user.email, req.user.role,
+       `Staff follow-up WA → ${staff.name} (${staffRole}) | ${waResult.ok ? 'sent' : waResult.reason}`]
+    );
+
+    res.json({ ok: true, wa: waResult, staffName: staff.name, phone });
+  } catch (e) {
+    console.error('[staff-followup]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // POST /api/superadmin/grant-grace/:userId — manually grant 1-month grace
 router.post('/grant-grace/:userId', requireAdmin, async (req, res) => {
   try {
