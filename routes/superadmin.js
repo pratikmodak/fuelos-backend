@@ -406,15 +406,29 @@ router.get('/contacts', requireAdmin, async (req, res) => {
   try {
     const r = await db.query(`
       SELECT o.id, o.name, o.email, o.phone, o.plan, o.status, o.end_date, o.city,
+             (SELECT COUNT(*) FROM pumps WHERE owner_id=o.id) AS pump_count,
              ol.type AS last_contact_type, ol.note AS last_contact_note,
-             ol.created_at AS last_contact_at, ol.follow_up
+             ol.created_at AS last_contact_at, ol.follow_up,
+             CASE WHEN o.end_date IS NOT NULL
+               THEN (o.end_date::date - CURRENT_DATE)
+               ELSE NULL
+             END AS days_left
       FROM owners o
       LEFT JOIN LATERAL (
         SELECT * FROM outreach_log WHERE owner_id=o.id ORDER BY created_at DESC LIMIT 1
       ) ol ON TRUE
-      ORDER BY o.end_date ASC
+      ORDER BY o.end_date ASC NULLS LAST
     `);
-    res.json(r.rows.map(o => ({ ...o, id: String(o.id) })));
+    res.json(r.rows.map(o => ({
+      ...o,
+      id:        String(o.id),
+      days_left: o.days_left !== null && o.days_left !== undefined ? parseInt(o.days_left) : null,
+      pump_count: parseInt(o.pump_count || 0),
+      priority:  o.days_left === null ? 'normal'
+                 : o.days_left <= 3  ? 'urgent'
+                 : o.days_left <= 7  ? 'high'
+                 : 'normal',
+    })));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
