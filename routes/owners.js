@@ -156,6 +156,14 @@ router.delete('/operators/:id', requireOwner, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// DELETE /api/owners/managers/:id
+router.delete('/managers/:id', requireOwner, async (req, res) => {
+  try {
+    await db.query('DELETE FROM managers WHERE id=$1 AND owner_id=$2', [req.params.id, req.user.owner_id]);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // PATCH /api/owners/managers/:id
 router.patch('/managers/:id', requireOwner, async (req, res) => {
   try {
