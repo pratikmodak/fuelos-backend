@@ -101,12 +101,6 @@ router.post('/', requireAuth, async (req, res) => {
     const totalRevenue = petrolRev + dieselRev + cngRev ||
       (s.cash||0) + (s.upi||0) + (s.card||0) + creditVal;
 
-    // Ensure shift column exists (added after initial schema)
-    await db.query(`ALTER TABLE nozzle_readings ADD COLUMN IF NOT EXISTS shift TEXT`).catch(()=>{});
-
-    // Ensure shift_started_at column exists (added after initial schema)
-    await db.query(`ALTER TABLE shift_reports ADD COLUMN IF NOT EXISTS shift_started_at TIMESTAMPTZ`).catch(()=>{});
-
     // Upsert shift
     await db.query(
       `INSERT INTO shift_reports
@@ -143,39 +137,37 @@ router.post('/', requireAuth, async (req, res) => {
       );
     }
 
-    // Save individual nozzle readings
-    for (const nr of (s.nozzleReadings || [])) {
-      await db.query(
-        `INSERT INTO nozzle_readings
-           (shift_id,pump_id,owner_id,nozzle_id,fuel,operator,date,shift,shift_index,
-            open_reading,close_reading,volume,rate,revenue)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-         ON CONFLICT DO NOTHING`,
-        [
-          s.id, s.pumpId||s.pump_id, ownerId,
-          nr.nozzleId||nr.nozzle_id, nr.fuel, nr.operator||s.operator,
-          s.date, s.shift, nr.shiftIndex??nr.shift_index??0,
-          nr.openReading??nr.open_reading??0,
-          nr.closeReading??nr.close_reading??0,
-          nr.saleVol??nr.volume??0, nr.rate||0, nr.revenue||0
-        ]
-      ).catch(e => console.error('[nozzle_readings insert]', e.message));
-
-      // Update nozzle's open+close reading so next shift sees correct value
-      const closeVal = nr.closeReading ?? nr.close_reading;
+    // Save nozzle readings + update nozzle open readings — all in parallel
+    const pumpId = s.pumpId || s.pump_id;
+    await Promise.all((s.nozzleReadings || []).map(nr => {
       const nozzleId = nr.nozzleId || nr.nozzle_id;
-      const pumpId   = s.pumpId || s.pump_id;
-      console.log(`[nozzle update] nozzle=${nozzleId} pump=${pumpId} closeVal=${closeVal}`);
-      if (closeVal != null && closeVal > 0 && nozzleId) {
-        const upd = await db.query(
-          `UPDATE nozzles SET open=$1, close=$1 WHERE id=$2 AND pump_id=$3 RETURNING id, open`,
-          [closeVal, nozzleId, pumpId]
-        ).catch(e => { console.error('[nozzle update error]', e.message); return null; });
-        console.log(`[nozzle update result]`, upd?.rows?.[0]);
-      } else {
-        console.warn(`[nozzle update SKIPPED] closeVal=${closeVal} nozzleId=${nozzleId}`);
-      }
-    }
+      const closeVal = nr.closeReading ?? nr.close_reading;
+      return Promise.all([
+        // Insert nozzle reading row
+        db.query(
+          `INSERT INTO nozzle_readings
+             (shift_id,pump_id,owner_id,nozzle_id,fuel,operator,date,shift,shift_index,
+              open_reading,close_reading,volume,rate,revenue)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+           ON CONFLICT DO NOTHING`,
+          [
+            s.id, pumpId, ownerId,
+            nozzleId, nr.fuel, nr.operator||s.operator,
+            s.date, s.shift, nr.shiftIndex??nr.shift_index??0,
+            nr.openReading??nr.open_reading??0,
+            closeVal??0,
+            nr.saleVol??nr.volume??0, nr.rate||0, nr.revenue||0
+          ]
+        ).catch(e => console.error('[nozzle_readings insert]', e.message)),
+        // Update nozzle open reading for next shift
+        (closeVal != null && closeVal > 0 && nozzleId)
+          ? db.query(
+              `UPDATE nozzles SET open=$1, close=$1 WHERE id=$2 AND pump_id=$3`,
+              [closeVal, nozzleId, pumpId]
+            ).catch(e => console.error('[nozzle update]', e.message))
+          : Promise.resolve(),
+      ]);
+    }));
 
     await logOp(req, { category:'shift', action:'Shift submitted', entityType:'shift_report', entityId:s.id, details:{ pumpId:s.pump_id, date:s.date, shift:s.shift } });
     res.json({ ok: true, id: s.id });
