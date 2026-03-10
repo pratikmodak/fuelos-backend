@@ -151,7 +151,9 @@ router.patch('/operators/:id', requireOwner, async (req, res) => {
 // DELETE /api/owners/operators/:id
 router.delete('/operators/:id', requireOwner, async (req, res) => {
   try {
-    await db.query('DELETE FROM operators WHERE id=$1 AND owner_id=$2', [req.params.id, req.user.owner_id]);
+    const ownerId = req.user.owner_id || req.user.id;
+    const r = await db.query('DELETE FROM operators WHERE id=$1 AND owner_id=$2 RETURNING id', [req.params.id, ownerId]);
+    if (!r.rows.length) return res.status(404).json({ error: 'Operator not found or not yours' });
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -159,7 +161,9 @@ router.delete('/operators/:id', requireOwner, async (req, res) => {
 // DELETE /api/owners/managers/:id
 router.delete('/managers/:id', requireOwner, async (req, res) => {
   try {
-    await db.query('DELETE FROM managers WHERE id=$1 AND owner_id=$2', [req.params.id, req.user.owner_id]);
+    const ownerId = req.user.owner_id || req.user.id;
+    const r = await db.query('DELETE FROM managers WHERE id=$1 AND owner_id=$2 RETURNING id', [req.params.id, ownerId]);
+    if (!r.rows.length) return res.status(404).json({ error: 'Manager not found or not yours' });
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
