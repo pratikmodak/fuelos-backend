@@ -29,92 +29,73 @@ async function upsertNotif(ownerId, type, title, body, data = {}, key = null) {
 // ─────────────────────────────────────────────────────────────────────────────
 async function generateOwnerNotifs(ownerId) {
   try {
-    // 1. Subscription expiring soon
-    const ownerRes = await db.query(
-      `SELECT name, end_date, plan, status FROM owners WHERE id=$1`, [ownerId]
-    );
-    const owner = ownerRes.rows[0];
-    if (owner && owner.end_date) {
-      const daysLeft = Math.ceil((new Date(owner.end_date) - new Date()) / 86400000);
-      if (daysLeft <= 7 && daysLeft >= 0 && owner.status !== 'Suspended') {
-        await upsertNotif(ownerId, 'subscription_expiring',
+    // Single combined query — all data in one round trip
+    const [summaryRes] = await Promise.all([
+      db.query(`
+        SELECT
+          o.name, o.end_date, o.plan, o.status,
+          (SELECT COUNT(*) FROM shift_reports sr WHERE sr.owner_id=o.id AND DATE(sr.created_at)=CURRENT_DATE) AS shifts_today,
+          (SELECT COUNT(*) FROM operators op WHERE op.owner_id=o.id AND op.status='Active'
+             AND (SELECT MAX(created_at) FROM shift_reports WHERE operator_id=op.id) < NOW() - INTERVAL '2 days') AS inactive_ops,
+          (SELECT COUNT(*) FROM credit_customers cc WHERE cc.owner_id=o.id AND cc.outstanding>0 AND cc.status='Active') AS credit_count,
+          (SELECT COALESCE(SUM(outstanding),0) FROM credit_customers cc WHERE cc.owner_id=o.id AND cc.outstanding>0 AND cc.status='Active') AS credit_total,
+          (SELECT name FROM credit_customers cc WHERE cc.owner_id=o.id AND cc.outstanding>0 AND cc.status='Active' ORDER BY outstanding DESC LIMIT 1) AS top_credit_name
+        FROM owners o WHERE o.id=$1
+      `, [ownerId]),
+    ]);
+
+    const row = summaryRes.rows[0];
+    if (!row) return;
+
+    const upserts = [];
+
+    // Subscription
+    if (row.end_date) {
+      const daysLeft = Math.ceil((new Date(row.end_date) - new Date()) / 86400000);
+      if (daysLeft <= 7 && daysLeft >= 0 && row.status !== 'Suspended')
+        upserts.push(upsertNotif(ownerId, 'subscription_expiring',
           `⚠️ Subscription expiring in ${daysLeft} day${daysLeft===1?'':'s'}`,
-          `Your ${owner.plan} plan expires on ${new Date(owner.end_date).toLocaleDateString('en-IN')}. Renew now to avoid interruption.`,
-          { days_left: daysLeft, plan: owner.plan }, `sub_expiry_${daysLeft}`
-        );
-      }
-      if (owner.status === 'Grace') {
-        await upsertNotif(ownerId, 'subscription_grace',
-          '🔴 Account in Grace Period',
-          'Your subscription has expired. Some features are restricted. Please renew to restore full access.',
-          { plan: owner.plan }, 'sub_grace_today'
-        );
-      }
+          `Your ${row.plan} plan expires on ${new Date(row.end_date).toLocaleDateString('en-IN')}. Renew now.`,
+          { days_left: daysLeft }, `sub_expiry_${daysLeft}`));
+      if (row.status === 'Grace')
+        upserts.push(upsertNotif(ownerId, 'subscription_grace', '🔴 Account in Grace Period',
+          'Your subscription has expired. Please renew to restore full access.', {}, 'sub_grace_today'));
     }
 
-    // 2. Staff inactive 2+ days
-    const staffRes = await db.query(
-      `SELECT name, 'Operator' AS role FROM operators
-       WHERE owner_id=$1 AND status='Active'
-         AND (
-           (SELECT MAX(created_at) FROM shift_reports WHERE operator_id=operators.id) IS NULL
-           OR (SELECT MAX(created_at) FROM shift_reports WHERE operator_id=operators.id) < NOW() - INTERVAL '2 days'
-         )
-       UNION ALL
-       SELECT name, 'Manager' AS role FROM managers
-       WHERE owner_id=$1 AND status='Active'
-         AND (
-           (SELECT MAX(created_at) FROM shift_reports sr WHERE sr.owner_id=$1 AND sr.created_at > NOW() - INTERVAL '2 days') IS NULL
-         )`,
-      [ownerId]
-    );
-    if (staffRes.rows.length > 0) {
-      const names = staffRes.rows.slice(0, 3).map(s => s.name).join(', ');
-      const more  = staffRes.rows.length > 3 ? ` +${staffRes.rows.length - 3} more` : '';
-      await upsertNotif(ownerId, 'staff_inactive',
-        `👥 ${staffRes.rows.length} staff not active recently`,
-        `${names}${more} have not submitted shifts in 2+ days.`,
-        { count: staffRes.rows.length }, `staff_inactive_${staffRes.rows.length}`
-      );
-    }
+    // Staff inactive
+    const inactiveCount = parseInt(row.inactive_ops || 0);
+    if (inactiveCount > 0)
+      upserts.push(upsertNotif(ownerId, 'staff_inactive',
+        `👥 ${inactiveCount} operator${inactiveCount>1?'s':''} not active in 2+ days`,
+        `${inactiveCount} operator${inactiveCount>1?'s have':' has'} not submitted shifts recently.`,
+        { count: inactiveCount }, `staff_inactive_${inactiveCount}`));
 
-    // 3. Shifts submitted today
-    const shiftRes = await db.query(
-      `SELECT COUNT(*) AS cnt FROM shift_reports
-       WHERE owner_id=$1 AND DATE(created_at) = CURRENT_DATE`, [ownerId]
-    );
-    const shiftCount = parseInt(shiftRes.rows[0]?.cnt || 0);
-    if (shiftCount > 0) {
-      await upsertNotif(ownerId, 'shifts_submitted',
-        `✅ ${shiftCount} shift${shiftCount > 1 ? 's' : ''} submitted today`,
-        `Your operators submitted ${shiftCount} shift report${shiftCount > 1 ? 's' : ''} today.`,
-        { count: shiftCount }, `shifts_today_${shiftCount}`
-      );
-    }
+    // Shifts today
+    const shiftCount = parseInt(row.shifts_today || 0);
+    if (shiftCount > 0)
+      upserts.push(upsertNotif(ownerId, 'shifts_submitted',
+        `✅ ${shiftCount} shift${shiftCount>1?'s':''} submitted today`,
+        `Your operators submitted ${shiftCount} shift report${shiftCount>1?'s':''} today.`,
+        { count: shiftCount }, `shifts_today_${shiftCount}`));
 
-    // 4. Credit customers with outstanding balance
-    const creditRes = await db.query(
-      `SELECT name, outstanding FROM credit_customers
-       WHERE owner_id=$1 AND outstanding > 0 AND status='Active'
-       ORDER BY outstanding DESC LIMIT 5`, [ownerId]
-    );
-    if (creditRes.rows.length > 0) {
-      const total = creditRes.rows.reduce((s, c) => s + parseFloat(c.outstanding || 0), 0);
-      await upsertNotif(ownerId, 'credit_outstanding',
-        `🤝 ₹${Math.round(total).toLocaleString('en-IN')} outstanding from ${creditRes.rows.length} credit customer${creditRes.rows.length>1?'s':''}`,
-        `${creditRes.rows[0].name} has the highest balance. Tap Credits tab to collect.`,
-        { total, count: creditRes.rows.length }, `credit_outstanding_${Math.round(total)}`
-      );
-    }
+    // Credit outstanding
+    const creditCount = parseInt(row.credit_count || 0);
+    const creditTotal = parseFloat(row.credit_total || 0);
+    if (creditCount > 0 && creditTotal > 0)
+      upserts.push(upsertNotif(ownerId, 'credit_outstanding',
+        `🤝 ₹${Math.round(creditTotal).toLocaleString('en-IN')} outstanding from ${creditCount} credit customer${creditCount>1?'s':''}`,
+        `${row.top_credit_name || 'A customer'} has the highest balance. Tap Credits to collect.`,
+        { total: creditTotal, count: creditCount }, `credit_outstanding_${Math.round(creditTotal)}`));
 
-    // 5. No shifts today (after 10am)
-    if (new Date().getHours() >= 10 && shiftCount === 0) {
-      await upsertNotif(ownerId, 'no_shift_today',
+    // No shifts today after 10am
+    if (new Date().getHours() >= 10 && shiftCount === 0)
+      upserts.push(upsertNotif(ownerId, 'no_shift_today',
         '⚠️ No shifts submitted today yet',
-        "It's past 10 AM and no shift reports have been submitted. Check if your operators are active.",
-        {}, 'no_shift_today'
-      );
-    }
+        "It's past 10 AM and no shifts have been submitted. Check if your operators are active.",
+        {}, 'no_shift_today'));
+
+    // All upserts in parallel
+    await Promise.all(upserts);
 
   } catch (e) {
     console.error('[generateOwnerNotifs]', e.message);
