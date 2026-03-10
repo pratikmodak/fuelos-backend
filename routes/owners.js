@@ -42,7 +42,6 @@ router.patch('/me', requireOwner, async (req, res) => {
     if (!sets.length) return res.json({ ok: true });
     vals.push(req.user.owner_id);
     await db.query(`UPDATE owners SET ${sets.join(',')}, updated_at=NOW() WHERE id=$${vals.length}`, vals);
-    await logOp(req, { category:'credit', action:'Credit collection', entityType:'credit_customer', entityId:req.params.id, details:{ amount:parseFloat(amount) } });
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
