@@ -996,4 +996,352 @@ router.delete('/portal-staff/:id', requireAdmin, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+
+// ════════════════════════════════════════════════
+// GET /api/superadmin/owner-health — health scores for all owners
+// ════════════════════════════════════════════════
+router.get('/owner-health', requireAdmin, async (req, res) => {
+  try {
+    const owners = await db.query(`SELECT id, name, email, phone, plan, status, end_date, city FROM owners WHERE status != 'Deleted' ORDER BY name`);
+
+    const scores = await Promise.all(owners.rows.map(async (o) => {
+      const [shifts7d, shifts30d, waCount, staffLogins, creditTxns, nozzleCount, machineTests] = await Promise.all([
+        db.query(`SELECT COUNT(*) AS cnt FROM shift_reports WHERE owner_id=$1 AND created_at > NOW()-INTERVAL '7 days'`, [o.id]),
+        db.query(`SELECT COUNT(*) AS cnt FROM shift_reports WHERE owner_id=$1 AND created_at > NOW()-INTERVAL '30 days'`, [o.id]),
+        db.query(`SELECT COUNT(*) AS cnt FROM wa_messages WHERE owner_id=$1::text AND created_at > NOW()-INTERVAL '30 days'`, [o.id]),
+        db.query(`SELECT COUNT(*) AS cnt FROM (
+          SELECT MAX(sr.created_at) AS la FROM managers m LEFT JOIN shift_reports sr ON sr.owner_id=m.owner_id WHERE m.owner_id=$1 AND m.status='Active' GROUP BY m.id
+          UNION ALL
+          SELECT MAX(sr.created_at) AS la FROM operators op LEFT JOIN shift_reports sr ON sr.operator_id=op.id WHERE op.owner_id=$1 AND op.status='Active' GROUP BY op.id
+        ) t WHERE la > NOW()-INTERVAL '7 days'`, [o.id]),
+        db.query(`SELECT COUNT(*) AS cnt FROM credit_transactions WHERE owner_id=$1 AND created_at > NOW()-INTERVAL '30 days'`, [o.id]).catch(()=>({rows:[{cnt:0}]})),
+        db.query(`SELECT COUNT(*) AS cnt FROM nozzles n JOIN pumps p ON p.id=n.pump_id WHERE p.owner_id=$1`, [o.id]).catch(()=>({rows:[{cnt:0}]})),
+        db.query(`SELECT COUNT(*) AS cnt FROM machine_tests WHERE owner_id=$1 AND created_at > NOW()-INTERVAL '30 days'`, [o.id]).catch(()=>({rows:[{cnt:0}]})),
+      ]);
+
+      const s7   = parseInt(shifts7d.rows[0].cnt);
+      const s30  = parseInt(shifts30d.rows[0].cnt);
+      const wa   = parseInt(waCount.rows[0].cnt);
+      const sl   = parseInt(staffLogins.rows[0].cnt);
+      const cr   = parseInt(creditTxns.rows[0].cnt);
+      const nz   = parseInt(nozzleCount.rows[0].cnt);
+      const mt   = parseInt(machineTests.rows[0].cnt);
+
+      // Score components out of 100
+      const shiftScore  = Math.min(40, s30 * 2);       // max 40 — shifts are core usage
+      const staffScore  = Math.min(20, sl * 3);         // max 20 — staff active
+      const waScore     = Math.min(15, wa * 3);         // max 15 — WA being used
+      const creditScore = Math.min(10, cr * 2);         // max 10 — credit entries
+      const nozzleScore = Math.min(10, nz >= 1 ? 10 : 0); // max 10 — nozzles configured
+      const testScore   = Math.min(5,  mt >= 1 ? 5  : 0);  // max 5  — machine tests
+      const total       = Math.round(shiftScore + staffScore + waScore + creditScore + nozzleScore + testScore);
+
+      const risk = total >= 70 ? 'healthy' : total >= 40 ? 'at-risk' : 'critical';
+
+      // Suggestions
+      const suggestions = [];
+      if (s7 === 0)  suggestions.push('No shifts submitted this week — operator may not be using the app');
+      if (sl === 0)  suggestions.push('No staff logins in 7 days — send a follow-up message');
+      if (wa === 0)  suggestions.push('WhatsApp not being used — check if WA is configured for this account');
+      if (cr === 0)  suggestions.push('No credit entries — remind owner about credit management feature');
+      if (nz === 0)  suggestions.push('No nozzles configured — account setup may be incomplete');
+      if (mt === 0)  suggestions.push('No machine tests this month — remind about compliance testing');
+      if (s30 > 20 && o.plan === 'Basic') suggestions.push('High activity on Basic plan — good candidate for Pro upgrade');
+
+      return {
+        id:       String(o.id),
+        name:     o.name,
+        email:    o.email,
+        phone:    o.phone,
+        plan:     o.plan,
+        status:   o.status,
+        end_date: o.end_date,
+        city:     o.city,
+        score:    total,
+        risk,
+        metrics: { shifts7d: s7, shifts30d: s30, waMessages: wa, staffActive: sl, creditTxns: cr, nozzles: nz, machineTests: mt },
+        suggestions,
+      };
+    }));
+
+    scores.sort((a, b) => a.score - b.score); // worst first
+    res.json({ owners: scores, generated_at: new Date().toISOString() });
+  } catch (e) {
+    console.error('[owner-health]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ════════════════════════════════════════════════
+// GET /api/superadmin/owner-engagement/:ownerId — 30-day drill-down
+// ════════════════════════════════════════════════
+router.get('/owner-engagement/:ownerId', requireAdmin, async (req, res) => {
+  try {
+    const { ownerId } = req.params;
+    const [owner, shifts, waLogs, staffList, credits, tests] = await Promise.all([
+      db.query(`SELECT id,name,email,phone,plan,status,end_date,city,created_at FROM owners WHERE id=$1`, [ownerId]),
+      db.query(`SELECT date, total_revenue, shift, operator FROM shift_reports WHERE owner_id=$1 AND created_at > NOW()-INTERVAL '30 days' ORDER BY date DESC LIMIT 60`, [ownerId]),
+      db.query(`SELECT DATE(created_at) AS day, COUNT(*) AS cnt, category FROM wa_messages WHERE owner_id=$1::text AND created_at > NOW()-INTERVAL '30 days' GROUP BY day,category ORDER BY day DESC`, [ownerId]),
+      db.query(`SELECT 'manager' AS role, name, COALESCE(lang_pref,'en') AS lang_pref, status, (SELECT MAX(sr.created_at) FROM shift_reports sr WHERE sr.owner_id=$1) AS last_active FROM managers WHERE owner_id=$1 AND status='Active'
+        UNION ALL SELECT 'operator', name, COALESCE(lang_pref,'en'), status, (SELECT MAX(sr.created_at) FROM shift_reports sr WHERE sr.operator_id=op.id) AS last_active FROM operators op WHERE op.owner_id=$1 AND op.status='Active'`, [ownerId]),
+      db.query(`SELECT DATE(created_at) AS day, COUNT(*) AS cnt FROM credit_transactions WHERE owner_id=$1 AND created_at > NOW()-INTERVAL '30 days' GROUP BY day ORDER BY day DESC`, [ownerId]).catch(()=>({rows:[]})),
+      db.query(`SELECT date, result FROM machine_tests WHERE owner_id=$1 AND created_at > NOW()-INTERVAL '30 days' ORDER BY date DESC LIMIT 20`, [ownerId]).catch(()=>({rows:[]})),
+    ]);
+
+    if (!owner.rows.length) return res.status(404).json({ error: 'Owner not found' });
+
+    // Build 30-day shift calendar
+    const shiftDays = new Set(shifts.rows.map(s => s.date?.toString().slice(0,10)));
+    const calendar  = [];
+    for (let i = 29; i >= 0; i--) {
+      const d = new Date(); d.setDate(d.getDate() - i);
+      const key = d.toISOString().slice(0,10);
+      calendar.push({ date: key, hasShift: shiftDays.has(key) });
+    }
+
+    res.json({
+      owner:    owner.rows[0],
+      shifts:   shifts.rows,
+      calendar,
+      waActivity: waLogs.rows,
+      staff:    staffList.rows,
+      credits:  credits.rows,
+      tests:    tests.rows,
+    });
+  } catch (e) {
+    console.error('[owner-engagement]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ════════════════════════════════════════════════
+// POST /api/superadmin/smart-report — AI-powered platform health report
+// (never refers to AI/Claude by name in the output)
+// ════════════════════════════════════════════════
+router.post('/smart-report', requireAdmin, async (req, res) => {
+  try {
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) return res.status(503).json({ error: 'Smart Reports not configured — set ANTHROPIC_API_KEY on backend' });
+
+    // Gather fresh data
+    const [owners, shifts7d, waStats, staffStats] = await Promise.all([
+      db.query(`SELECT id,name,plan,status,end_date,
+        CASE WHEN end_date IS NOT NULL THEN (end_date::date - CURRENT_DATE) ELSE NULL END AS days_left
+        FROM owners WHERE status != 'Deleted' ORDER BY end_date ASC`),
+      db.query(`SELECT o.name AS owner_name, COUNT(sr.id) AS shift_count
+        FROM owners o LEFT JOIN shift_reports sr ON sr.owner_id=o.id AND sr.created_at > NOW()-INTERVAL '7 days'
+        GROUP BY o.id, o.name ORDER BY shift_count ASC LIMIT 20`),
+      db.query(`SELECT COUNT(*) AS sent, COUNT(*) FILTER (WHERE status='failed') AS failed FROM wa_messages WHERE created_at > NOW()-INTERVAL '7 days'`),
+      db.query(`SELECT
+        (SELECT COUNT(*) FROM managers WHERE status='Active') AS mgr_count,
+        (SELECT COUNT(*) FROM operators WHERE status='Active') AS op_count,
+        (SELECT COUNT(*) FROM managers WHERE status='Active' AND id IN (SELECT DISTINCT m.id FROM managers m JOIN shift_reports sr ON sr.owner_id=m.owner_id WHERE sr.created_at > NOW()-INTERVAL '7 days')) AS mgr_active,
+        (SELECT COUNT(*) FROM operators op WHERE status='Active' AND id IN (SELECT DISTINCT sr.operator_id FROM shift_reports sr WHERE sr.created_at > NOW()-INTERVAL '7 days' AND sr.operator_id IS NOT NULL)) AS op_active`),
+    ]);
+
+    const planPrices = { Basic: 999, Pro: 2499, Business: 5999, Enterprise: 14999 };
+    const activeOwners   = owners.rows.filter(o => o.status === 'Active');
+    const mrr            = activeOwners.reduce((s, o) => s + (planPrices[o.plan] || 0), 0);
+    const expiringIn7    = activeOwners.filter(o => o.days_left !== null && o.days_left <= 7);
+    const suspended      = owners.rows.filter(o => o.status === 'Suspended');
+    const lowActivity    = shifts7d.rows.filter(r => parseInt(r.shift_count) === 0);
+    const wa             = waStats.rows[0];
+    const st             = staffStats.rows[0];
+
+    const prompt = `You are a senior business analyst for FuelOS, a petrol pump management SaaS platform in India. Analyze the following weekly platform data and produce a concise, actionable report for the SuperAdmin team. Write in plain English, no markdown headers, no bullet symbols. Use numbered sections. Never mention AI, machine learning, Claude, Anthropic, or any technology vendor names.
+
+PLATFORM DATA (as of ${new Date().toLocaleDateString('en-IN')}):
+- Total owners: ${owners.rows.length} (Active: ${activeOwners.length}, Suspended: ${suspended.length})
+- Estimated MRR: ₹${mrr.toLocaleString('en-IN')}
+- Owners expiring in 7 days: ${expiringIn7.length} (names: ${expiringIn7.map(o=>o.name).join(', ') || 'none'})
+- Owners with ZERO shifts this week: ${lowActivity.length} (names: ${lowActivity.slice(0,10).map(o=>o.owner_name).join(', ') || 'none'})
+- WhatsApp messages sent (7d): ${wa.sent}, failed: ${wa.failed}
+- Active managers: ${st.mgr_active}/${st.mgr_count}, Active operators: ${st.op_active}/${st.op_count}
+- Plan breakdown: ${['Basic','Pro','Business','Enterprise'].map(p => `${p}: ${activeOwners.filter(o=>o.plan===p).length}`).join(', ')}
+
+Write a report with exactly these 4 sections:
+1. Platform Health Summary (3-4 sentences on overall health)
+2. Immediate Actions Required (specific owners to call, with reason)
+3. Revenue Risk Analysis (churn risk, at-risk MRR, what to do)
+4. Weekly Recommendations (2-3 actionable steps for the team this week)
+
+Keep it concise, direct, and practical. Total length: 200-280 words.`;
+
+    const aiRes = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 600, messages: [{ role: 'user', content: prompt }] }),
+    });
+
+    if (!aiRes.ok) {
+      const err = await aiRes.json().catch(() => ({}));
+      return res.status(503).json({ error: 'Smart Report generation failed: ' + (err.error?.message || aiRes.statusText) });
+    }
+
+    const aiData = await aiRes.json();
+    const report = aiData.content?.[0]?.text || 'Report generation failed.';
+
+    res.json({ report, generated_at: new Date().toISOString(), data_snapshot: { total_owners: owners.rows.length, active: activeOwners.length, mrr, expiring: expiringIn7.length, low_activity: lowActivity.length } });
+  } catch (e) {
+    console.error('[smart-report]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ════════════════════════════════════════════════
+// GET /api/superadmin/upgrade-opportunities — owners who should upgrade
+// ════════════════════════════════════════════════
+router.get('/upgrade-opportunities', requireAdmin, async (req, res) => {
+  try {
+    const r = await db.query(`
+      SELECT o.id, o.name, o.email, o.phone, o.plan, o.status,
+        (SELECT COUNT(*) FROM pumps WHERE owner_id=o.id) AS pump_count,
+        (SELECT COUNT(*) FROM nozzles n JOIN pumps p ON p.id=n.pump_id WHERE p.owner_id=o.id) AS nozzle_count,
+        (SELECT COUNT(*) FROM managers WHERE owner_id=o.id AND status='Active') AS manager_count,
+        (SELECT COUNT(*) FROM operators WHERE owner_id=o.id AND status='Active') AS operator_count,
+        (SELECT COUNT(*) FROM shift_reports WHERE owner_id=o.id AND created_at > NOW()-INTERVAL '30 days') AS shifts30d
+      FROM owners o WHERE o.status='Active'
+    `);
+
+    const planLimits = {
+      Basic:      { pumps: 1, nozzles: 4,  staff: 5,  nextPlan: 'Pro',      nextPrice: 2499 },
+      Pro:        { pumps: 3, nozzles: 12, staff: 15, nextPlan: 'Business', nextPrice: 5999 },
+      Business:   { pumps: 8, nozzles: 40, staff: 50, nextPlan: 'Enterprise', nextPrice: 14999 },
+      Enterprise: { pumps: 999, nozzles: 999, staff: 999, nextPlan: null, nextPrice: 0 },
+    };
+
+    const opportunities = r.rows.map(o => {
+      const lim  = planLimits[o.plan] || planLimits.Basic;
+      const pc   = parseInt(o.pump_count);
+      const nc   = parseInt(o.nozzle_count);
+      const sc   = parseInt(o.manager_count) + parseInt(o.operator_count);
+      const s30  = parseInt(o.shifts30d);
+
+      const pumpPct   = lim.pumps   < 999 ? Math.round((pc / lim.pumps)   * 100) : 0;
+      const nozzlePct = lim.nozzles < 999 ? Math.round((nc / lim.nozzles) * 100) : 0;
+      const staffPct  = lim.staff   < 999 ? Math.round((sc / lim.staff)   * 100) : 0;
+      const maxPct    = Math.max(pumpPct, nozzlePct, staffPct);
+
+      if (maxPct < 70 || !lim.nextPlan) return null;
+
+      const reason =
+        pumpPct >= 100  ? `Using all ${lim.pumps} pump(s) — at capacity` :
+        nozzlePct >= 100? `Using all ${lim.nozzles} nozzles — at capacity` :
+        staffPct >= 100 ? `${sc} staff members — at plan limit` :
+        pumpPct >= 70   ? `${pc}/${lim.pumps} pumps used (${pumpPct}%)` :
+        nozzlePct >= 70 ? `${nc}/${lim.nozzles} nozzles used (${nozzlePct}%)` :
+                          `${sc}/${lim.staff} staff used (${staffPct}%)`;
+
+      return {
+        id:        String(o.id),
+        name:      o.name,
+        email:     o.email,
+        phone:     o.phone,
+        plan:      o.plan,
+        nextPlan:  lim.nextPlan,
+        nextPrice: lim.nextPrice,
+        maxUsage:  maxPct,
+        reason,
+        shifts30d: s30,
+        metrics:   { pumps: pc, nozzles: nc, staff: sc, pumpPct, nozzlePct, staffPct },
+      };
+    }).filter(Boolean).sort((a, b) => b.maxUsage - a.maxUsage);
+
+    res.json({ opportunities, generated_at: new Date().toISOString() });
+  } catch (e) {
+    console.error('[upgrade-opportunities]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ════════════════════════════════════════════════
+// GET /api/superadmin/renewal-forecast — 90-day renewal pipeline
+// ════════════════════════════════════════════════
+router.get('/renewal-forecast', requireAdmin, async (req, res) => {
+  try {
+    const r = await db.query(`
+      SELECT id, name, email, phone, plan, status, end_date,
+        (end_date::date - CURRENT_DATE) AS days_left,
+        (SELECT COUNT(*) FROM shift_reports sr WHERE sr.owner_id=owners.id AND sr.created_at > NOW()-INTERVAL '7 days') AS shifts7d
+      FROM owners
+      WHERE end_date IS NOT NULL AND end_date::date BETWEEN CURRENT_DATE AND CURRENT_DATE + 90
+        AND status IN ('Active','Grace')
+      ORDER BY end_date ASC
+    `);
+
+    const planPrices = { Basic: 999, Pro: 2499, Business: 5999, Enterprise: 14999 };
+
+    const rows = r.rows.map(o => ({
+      id:        String(o.id),
+      name:      o.name,
+      email:     o.email,
+      phone:     o.phone,
+      plan:      o.plan,
+      status:    o.status,
+      end_date:  o.end_date,
+      days_left: parseInt(o.days_left),
+      mrr:       planPrices[o.plan] || 0,
+      shifts7d:  parseInt(o.shifts7d || 0),
+      health:    parseInt(o.shifts7d || 0) >= 3 ? 'active' : parseInt(o.shifts7d || 0) >= 1 ? 'low' : 'inactive',
+      week:      parseInt(o.days_left) <= 7 ? 'This Week' : parseInt(o.days_left) <= 14 ? 'Next Week' : parseInt(o.days_left) <= 30 ? 'This Month' : '30-90 Days',
+    }));
+
+    const totalForecastMRR = rows.reduce((s, o) => s + o.mrr, 0);
+    const atRiskMRR        = rows.filter(o => o.health === 'inactive' && o.days_left <= 30).reduce((s, o) => s + o.mrr, 0);
+
+    res.json({ owners: rows, totalForecastMRR, atRiskMRR, generated_at: new Date().toISOString() });
+  } catch (e) {
+    console.error('[renewal-forecast]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ════════════════════════════════════════════════
+// GET /api/superadmin/feature-adoption — which features each owner uses
+// ════════════════════════════════════════════════
+router.get('/feature-adoption', requireAdmin, async (req, res) => {
+  try {
+    const owners = await db.query(`SELECT id, name, plan, status FROM owners WHERE status='Active' ORDER BY name`);
+
+    const featureData = await Promise.all(owners.rows.map(async (o) => {
+      const [shifts, credits, expenses, tests, wa, tanks] = await Promise.all([
+        db.query(`SELECT COUNT(*) AS cnt FROM shift_reports WHERE owner_id=$1 AND created_at > NOW()-INTERVAL '30 days'`, [o.id]),
+        db.query(`SELECT COUNT(*) AS cnt FROM credit_transactions WHERE owner_id=$1 AND created_at > NOW()-INTERVAL '30 days'`, [o.id]).catch(()=>({rows:[{cnt:0}]})),
+        db.query(`SELECT COUNT(*) AS cnt FROM expenses WHERE owner_id=$1 AND created_at > NOW()-INTERVAL '30 days'`, [o.id]).catch(()=>({rows:[{cnt:0}]})),
+        db.query(`SELECT COUNT(*) AS cnt FROM machine_tests WHERE owner_id=$1 AND created_at > NOW()-INTERVAL '30 days'`, [o.id]).catch(()=>({rows:[{cnt:0}]})),
+        db.query(`SELECT COUNT(*) AS cnt FROM wa_messages WHERE owner_id=$1::text AND created_at > NOW()-INTERVAL '30 days'`, [o.id]),
+        db.query(`SELECT COUNT(*) AS cnt FROM tanks WHERE owner_id=$1`, [o.id]).catch(()=>({rows:[{cnt:0}]})),
+      ]);
+
+      return {
+        id:   String(o.id),
+        name: o.name,
+        plan: o.plan,
+        features: {
+          shifts:    parseInt(shifts.rows[0].cnt) > 0,
+          credit:    parseInt(credits.rows[0].cnt) > 0,
+          expenses:  parseInt(expenses.rows[0].cnt) > 0,
+          machineTest: parseInt(tests.rows[0].cnt) > 0,
+          whatsapp:  parseInt(wa.rows[0].cnt) > 0,
+          tanks:     parseInt(tanks.rows[0].cnt) > 0,
+        },
+        usageCount: [shifts, credits, expenses, tests, wa, tanks].filter(r => parseInt(r.rows[0].cnt) > 0).length,
+      };
+    }));
+
+    const totalOwners = featureData.length || 1;
+    const featureSummary = ['shifts','credit','expenses','machineTest','whatsapp','tanks'].map(f => ({
+      feature:   f,
+      label:     f === 'shifts' ? 'Shift Reports' : f === 'credit' ? 'Credit Sales' : f === 'expenses' ? 'Expense Tracking' : f === 'machineTest' ? 'Machine Tests' : f === 'whatsapp' ? 'WhatsApp Alerts' : 'Tank Management',
+      count:     featureData.filter(o => o.features[f]).length,
+      pct:       Math.round((featureData.filter(o => o.features[f]).length / totalOwners) * 100),
+    }));
+
+    res.json({ owners: featureData.sort((a,b) => b.usageCount - a.usageCount), featureSummary, generated_at: new Date().toISOString() });
+  } catch (e) {
+    console.error('[feature-adoption]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 module.exports = router;
