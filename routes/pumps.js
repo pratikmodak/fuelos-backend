@@ -2,12 +2,18 @@
 const router = require('express').Router();
 const db = require('../db');
 const { requireAuth } = require('../middleware/auth');
+const { logOp } = require('../middleware/audit-middleware');
 
 // GET /api/pumps
 router.get('/', requireAuth, async (req, res) => {
   try {
     const ownerId = req.user.owner_id || req.user.id;
-    const r = await db.query('SELECT * FROM pumps WHERE owner_id=$1 ORDER BY name', [ownerId]);
+    const r = await db.query(`
+      SELECT p.*, o.shift_config
+      FROM pumps p
+      LEFT JOIN owners o ON o.id = p.owner_id
+      WHERE p.owner_id=$1 ORDER BY p.name
+    `, [ownerId]);
     res.json(r.rows.map(p => ({
       ...p,
       ownerId:        String(p.owner_id),
@@ -15,6 +21,7 @@ router.get('/', requireAuth, async (req, res) => {
       latitude:       p.latitude  ? parseFloat(p.latitude)  : null,
       longitude:      p.longitude ? parseFloat(p.longitude) : null,
       geofenceRadius: p.geofence_radius || 150,
+      shift_config:   p.shift_config || [],
     })));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -77,6 +84,7 @@ router.post('/:id/nozzles', requireAuth, async (req, res) => {
        ON CONFLICT (id,pump_id) DO UPDATE SET fuel=$4,status=$5,operator=$6,open=$7`,
       [id, req.params.id, ownerId, fuel, status||'Active', operator||'', openVal]
     );
+    await logOp(req, { category:'pump', action:'Nozzle reading recorded', entityType:'pump', entityId:id, details:{ openVal } });
     res.json({ ok: true, id, open_reading: openVal });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
