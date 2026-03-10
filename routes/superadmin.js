@@ -936,4 +936,64 @@ router.delete('/staff/:role/:id', requireAdmin, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ─────────────────────────────────────────────────────────
+// PORTAL STAFF — manage internal company_users (admin/monitor/caller)
+// ─────────────────────────────────────────────────────────
+
+// GET /api/superadmin/portal-staff
+router.get('/portal-staff', requireAdmin, async (req, res) => {
+  try {
+    const r = await db.query(
+      `SELECT id, name, email, role, created_at, last_login
+       FROM company_users
+       ORDER BY created_at DESC`
+    );
+    res.json(r.rows.map(u => ({
+      id:        u.id,
+      name:      u.name,
+      email:     u.email,
+      role:      u.role,
+      createdAt: u.created_at,
+      lastLogin: u.last_login || null,
+    })));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/superadmin/portal-staff
+router.post('/portal-staff', requireAdmin, async (req, res) => {
+  try {
+    const { name, email, password, role } = req.body;
+    if (!name || !email || !password || !role) return res.status(400).json({ error: 'All fields required' });
+    const allowed = ['admin', 'monitor', 'caller', 'superadmin'];
+    if (!allowed.includes(role)) return res.status(400).json({ error: 'Invalid role' });
+
+    // Check duplicate
+    const exists = await db.query('SELECT id FROM company_users WHERE email=$1', [email]);
+    if (exists.rows.length) return res.status(409).json({ error: 'Email already exists' });
+
+    const bcrypt = require('bcryptjs');
+    const hash = await bcrypt.hash(password, 10);
+    const r = await db.query(
+      `INSERT INTO company_users (name, email, password, role, created_at)
+       VALUES ($1, $2, $3, $4, NOW()) RETURNING id, name, email, role, created_at`,
+      [name, email, hash, role]
+    );
+    const u = r.rows[0];
+    res.json({ id: u.id, name: u.name, email: u.email, role: u.role, createdAt: u.created_at });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// DELETE /api/superadmin/portal-staff/:id
+router.delete('/portal-staff/:id', requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    // Prevent self-delete
+    if (req.user && String(req.user.id) === String(id)) {
+      return res.status(400).json({ error: 'Cannot delete your own account' });
+    }
+    await db.query('DELETE FROM company_users WHERE id=$1', [id]);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 module.exports = router;
