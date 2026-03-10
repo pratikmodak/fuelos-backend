@@ -732,7 +732,8 @@ router.post('/bulk-followup', requireAdmin, async (req, res) => {
 router.post('/staff-followup/:staffId', requireAdmin, async (req, res) => {
   try {
     const { role } = req.body; // 'manager' or 'operator'
-    const table = role === 'manager' ? 'managers' : 'operators';
+    const roleNorm = (role||'').toLowerCase();
+    const table = roleNorm === 'manager' ? 'managers' : 'operators';
 
     const staffRes = await db.query(
       `SELECT s.id, s.name, s.phone, s.email, s.owner_id,
@@ -752,7 +753,7 @@ router.post('/staff-followup/:staffId', requireAdmin, async (req, res) => {
     const phone = staff.phone || staff.whatsapp_num;
     if (!phone) return res.status(400).json({ error: 'No phone number on record for this staff member' });
 
-    const staffRole = role === 'manager' ? 'Manager' : 'Operator';
+    const staffRole = roleNorm === 'manager' ? 'Manager' : 'Operator';
     const staffLang = staff.lang_pref || 'en';
     const msg = staffFollowup(staff, staff.owner_name, staffLang);
 
