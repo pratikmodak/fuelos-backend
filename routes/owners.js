@@ -311,14 +311,22 @@ router.post('/credit-customers/:id/purchase', requireOwnerOrManager, async (req,
     await ensureCreditTxnTable();
     // Look up customer directly — works for both owner and manager tokens
     const { rows: cust } = await db.query(
-      'SELECT id, owner_id, status FROM credit_customers WHERE id=$1',
+      'SELECT id, owner_id, status, credit_limit, outstanding FROM credit_customers WHERE id=$1',
       [req.params.id]
     );
     if (!cust.length) return res.status(404).json({ error: 'Customer not found' });
     if (cust[0].status !== 'Active')
       return res.status(403).json({ error: 'Credit blocked — status: ' + cust[0].status + '. Owner must approve first.' });
-    const ownerId = cust[0].owner_id; // always use the real owner_id from DB
+    const ownerId = cust[0].owner_id;
     const { id: txnId, date, fuel, qty, rate, amount, note } = req.body;
+    // Credit limit check — managers cannot exceed limit; owners can override
+    const creditLimit = parseFloat(cust[0].credit_limit || 0);
+    const outstanding = parseFloat(cust[0].outstanding || 0);
+    const purchaseAmt = parseFloat(amount || 0);
+    const isManager = req.user.role === 'manager' || req.user.role === 'operator';
+    if (creditLimit > 0 && (outstanding + purchaseAmt) > creditLimit && isManager) {
+      return res.status(400).json({ error: `Exceeds credit limit of ₹${creditLimit.toLocaleString('en-IN')} — outstanding is ₹${outstanding.toLocaleString('en-IN')}, this purchase would add ₹${purchaseAmt.toLocaleString('en-IN')}` });
+    }
     const txnDate = date || new Date().toISOString().slice(0,10);
     await db.query(
       `INSERT INTO credit_transactions (id,owner_id,customer_id,date,fuel,qty,rate,amount,type,note)
@@ -340,20 +348,26 @@ router.post('/credit-customers/:id/collect', requireOwnerOrManager, async (req, 
     await ensureCreditTxnTable();
     // Get real owner_id from DB — don't trust JWT owner_id (manager tokens may not have it)
     const { rows: cust } = await db.query(
-      'SELECT owner_id FROM credit_customers WHERE id=$1',
+      'SELECT owner_id, outstanding FROM credit_customers WHERE id=$1',
       [req.params.id]
     );
     if (!cust.length) return res.status(404).json({ error: 'Customer not found' });
     const ownerId = cust[0].owner_id;
     const { id: txnId, amount, note } = req.body;
+    const collectAmt = parseFloat(amount || 0);
+    const currentOutstanding = parseFloat(cust[0].outstanding || 0);
+    if (collectAmt <= 0) return res.status(400).json({ error: 'Collection amount must be greater than zero' });
+    if (collectAmt > currentOutstanding) {
+      return res.status(400).json({ error: `Cannot collect ₹${collectAmt.toLocaleString('en-IN')} — outstanding balance is only ₹${currentOutstanding.toLocaleString('en-IN')}` });
+    }
     await db.query(
       `INSERT INTO credit_transactions (id,owner_id,customer_id,date,amount,type,note)
        VALUES ($1,$2,$3,CURRENT_DATE,$4,'payment',$5)`,
-      [txnId, ownerId, req.params.id, parseFloat(amount), note||null]
+      [txnId, ownerId, req.params.id, collectAmt, note||null]
     );
     await db.query(
-      `UPDATE credit_customers SET outstanding=GREATEST(0,outstanding-$1::numeric), last_txn=CURRENT_DATE, updated_at=NOW() WHERE id=$2`,
-      [parseFloat(amount), req.params.id]
+      `UPDATE credit_customers SET outstanding=outstanding-$1::numeric, last_txn=CURRENT_DATE, updated_at=NOW() WHERE id=$2`,
+      [collectAmt, req.params.id]
     );
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
