@@ -101,76 +101,78 @@ router.post('/', requireAuth, async (req, res) => {
     const totalRevenue = petrolRev + dieselRev + cngRev ||
       (s.cash||0) + (s.upi||0) + (s.card||0) + creditVal;
 
-    // Upsert shift
-    await db.query(
-      `INSERT INTO shift_reports
-         (id,owner_id,pump_id,operator_id,operator,shift,date,nozzle_readings,
-          cash,upi,card,credit,total_revenue,petrol_vol,diesel_vol,cng_vol,status,note,shift_started_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
-       ON CONFLICT (id) DO UPDATE SET
-         cash=$9,upi=$10,card=$11,credit=$12,total_revenue=$13,
-         petrol_vol=$14,diesel_vol=$15,cng_vol=$16,status=$17,note=$18,
-         nozzle_readings=$8,
-         shift_started_at=COALESCE(shift_reports.shift_started_at, EXCLUDED.shift_started_at)`,
-      [
-        s.id, ownerId, s.pumpId||s.pump_id, s.operatorId||s.operator_id||null,
-        s.operator, s.shift, s.date, JSON.stringify(s.nozzleReadings||s.nozzle_readings||[]),
-        s.cash||0, s.upi||0, s.card||0, creditVal, totalRevenue,
-        s.petrolVol||petrolVol||s.petrol_vol||0, s.dieselVol||dieselVol||s.diesel_vol||0, s.cngVol||cngVol||s.cng_vol||0,
-        s.status||'Submitted', s.note||null,
-        s.startedAt || null,
-      ]
-    );
-
-    // Upsert sales aggregate for the day
-    if (s.pumpId || s.pump_id) {
-      await db.query(
-        `INSERT INTO sales (owner_id,pump_id,date,petrol,diesel,cng,total)
-         VALUES ($1,$2,$3,$4,$5,$6,$7)
-         ON CONFLICT (owner_id,pump_id,date) DO UPDATE SET
-           petrol=sales.petrol+EXCLUDED.petrol,
-           diesel=sales.diesel+EXCLUDED.diesel,
-           cng=sales.cng+EXCLUDED.cng,
-           total=sales.total+EXCLUDED.total`,
-        [ownerId, s.pumpId||s.pump_id, s.date,
-         petrolRev, dieselRev, cngRev, totalRevenue]
-      );
-    }
-
-    // Save nozzle readings + update nozzle open readings — all in parallel
-    const pumpId = s.pumpId || s.pump_id;
-    await Promise.all((s.nozzleReadings || []).map(nr => {
-      const nozzleId = nr.nozzleId || nr.nozzle_id;
-      const closeVal = nr.closeReading ?? nr.close_reading;
-      return Promise.all([
-        // Insert nozzle reading row
-        db.query(
-          `INSERT INTO nozzle_readings
-             (shift_id,pump_id,owner_id,nozzle_id,fuel,operator,date,shift,shift_index,
-              open_reading,close_reading,volume,rate,revenue)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-           ON CONFLICT DO NOTHING`,
-          [
-            s.id, pumpId, ownerId,
-            nozzleId, nr.fuel, nr.operator||s.operator,
-            s.date, s.shift, nr.shiftIndex??nr.shift_index??0,
-            nr.openReading??nr.open_reading??0,
-            closeVal??0,
-            nr.saleVol??nr.volume??0, nr.rate||0, nr.revenue||0
-          ]
-        ).catch(e => console.error('[nozzle_readings insert]', e.message)),
-        // Update nozzle open reading for next shift
-        (closeVal != null && closeVal > 0 && nozzleId)
-          ? db.query(
-              `UPDATE nozzles SET open=$1, close=$1 WHERE id=$2 AND pump_id=$3`,
-              [closeVal, nozzleId, pumpId]
-            ).catch(e => console.error('[nozzle update]', e.message))
-          : Promise.resolve(),
-      ]);
-    }));
-
-    await logOp(req, { category:'shift', action:'Shift submitted', entityType:'shift_report', entityId:s.id, details:{ pumpId:s.pump_id, date:s.date, shift:s.shift } });
+    // ── Respond immediately — operator gets instant feedback
     res.json({ ok: true, id: s.id });
+
+    // ── All DB writes happen in background — don't block the response
+    setImmediate(async () => {
+      const pumpId = s.pumpId || s.pump_id;
+      try {
+        // 1. Upsert shift report
+        await db.query(
+          `INSERT INTO shift_reports
+             (id,owner_id,pump_id,operator_id,operator,shift,date,nozzle_readings,
+              cash,upi,card,credit,total_revenue,petrol_vol,diesel_vol,cng_vol,status,note,shift_started_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+           ON CONFLICT (id) DO UPDATE SET
+             cash=$9,upi=$10,card=$11,credit=$12,total_revenue=$13,
+             petrol_vol=$14,diesel_vol=$15,cng_vol=$16,status=$17,note=$18,
+             nozzle_readings=$8,
+             shift_started_at=COALESCE(shift_reports.shift_started_at, EXCLUDED.shift_started_at)`,
+          [
+            s.id, ownerId, pumpId, s.operatorId||s.operator_id||null,
+            s.operator, s.shift, s.date, JSON.stringify(s.nozzleReadings||s.nozzle_readings||[]),
+            s.cash||0, s.upi||0, s.card||0, creditVal, totalRevenue,
+            s.petrolVol||petrolVol||s.petrol_vol||0, s.dieselVol||dieselVol||s.diesel_vol||0, s.cngVol||cngVol||s.cng_vol||0,
+            s.status||'Submitted', s.note||null, s.startedAt||null,
+          ]
+        );
+
+        // 2. All remaining writes in parallel
+        await Promise.all([
+          // Sales aggregate
+          pumpId ? db.query(
+            `INSERT INTO sales (owner_id,pump_id,date,petrol,diesel,cng,total)
+             VALUES ($1,$2,$3,$4,$5,$6,$7)
+             ON CONFLICT (owner_id,pump_id,date) DO UPDATE SET
+               petrol=sales.petrol+EXCLUDED.petrol, diesel=sales.diesel+EXCLUDED.diesel,
+               cng=sales.cng+EXCLUDED.cng, total=sales.total+EXCLUDED.total`,
+            [ownerId, pumpId, s.date, petrolRev, dieselRev, cngRev, totalRevenue]
+          ).catch(e => console.error('[sales upsert]', e.message)) : Promise.resolve(),
+
+          // Nozzle readings + open reading updates
+          ...(s.nozzleReadings || []).flatMap(nr => {
+            const nozzleId = nr.nozzleId || nr.nozzle_id;
+            const closeVal = nr.closeReading ?? nr.close_reading;
+            return [
+              db.query(
+                `INSERT INTO nozzle_readings
+                   (shift_id,pump_id,owner_id,nozzle_id,fuel,operator,date,shift,shift_index,
+                    open_reading,close_reading,volume,rate,revenue)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+                 ON CONFLICT DO NOTHING`,
+                [s.id, pumpId, ownerId, nozzleId, nr.fuel, nr.operator||s.operator,
+                 s.date, s.shift, nr.shiftIndex??nr.shift_index??0,
+                 nr.openReading??nr.open_reading??0, closeVal??0,
+                 nr.saleVol??nr.volume??0, nr.rate||0, nr.revenue||0]
+              ).catch(e => console.error('[nr insert]', e.message)),
+              (closeVal != null && closeVal > 0 && nozzleId)
+                ? db.query(
+                    `UPDATE nozzles SET open=$1, close=$1 WHERE id=$2 AND pump_id=$3`,
+                    [closeVal, nozzleId, pumpId]
+                  ).catch(e => console.error('[nozzle update]', e.message))
+                : Promise.resolve(),
+            ];
+          }),
+
+          // Audit log
+          logOp(req, { category:'shift', action:'Shift submitted', entityType:'shift_report',
+            entityId:s.id, details:{ pumpId, date:s.date, shift:s.shift } }).catch(()=>{}),
+        ]);
+      } catch(e) {
+        console.error('[shift background save]', e.message);
+      }
+    });
 
     // ── Non-blocking WhatsApp notification to owner
     setImmediate(async () => {
