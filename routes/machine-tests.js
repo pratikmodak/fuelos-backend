@@ -7,7 +7,11 @@ const { logOp } = require('../middleware/audit-middleware');
 // GET /api/machine-tests?pump_id=&date=&from_date=&to_date=
 router.get('/', requireAuth, async (req, res) => {
   try {
-    const ownerId = req.user.owner_id || req.user.id;
+    // owner JWT: { id=ownerId, role='owner', owner_id=undefined }
+    // staff JWT: { id=staffId, role='manager'/'operator', owner_id=ownerId }
+    const ownerId = req.user.role === 'owner'
+      ? req.user.id
+      : (req.user.owner_id || req.user.id);
     const { pump_id, date, from_date, to_date, limit = 200 } = req.query;
     const params = [ownerId];
     let where = 'owner_id=$1';
@@ -30,7 +34,9 @@ router.get('/', requireAuth, async (req, res) => {
 // POST /api/machine-tests
 router.post('/', requireAuth, async (req, res) => {
   try {
-    const ownerId = req.user.owner_id || req.user.id;
+    const ownerId = req.user.role === 'owner'
+      ? req.user.id
+      : (req.user.owner_id || req.user.id);
     const {
       id, pumpId, nozzleId, fuel, date, time, shift,
       operator, qty, meterBefore, meterAfter,
