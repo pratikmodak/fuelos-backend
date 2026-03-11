@@ -12,6 +12,7 @@ router.get('/', requireAuth, async (req, res) => {
     const ownerId = req.user.role === 'owner'
       ? req.user.id
       : (req.user.owner_id || req.user.id);
+    console.log('[MT-GET] role:', req.user.role, '| id:', req.user.id, '| owner_id:', req.user.owner_id, '| using ownerId:', ownerId);
     const { pump_id, date, from_date, to_date, limit = 200 } = req.query;
     const params = [ownerId];
     let where = 'owner_id=$1';
@@ -37,6 +38,7 @@ router.post('/', requireAuth, async (req, res) => {
     const ownerId = req.user.role === 'owner'
       ? req.user.id
       : (req.user.owner_id || req.user.id);
+    console.log('[MT-POST] role:', req.user.role, '| id:', req.user.id, '| owner_id:', req.user.owner_id, '| using ownerId:', ownerId);
     const {
       id, pumpId, nozzleId, fuel, date, time, shift,
       operator, qty, meterBefore, meterAfter,
