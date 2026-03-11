@@ -12,7 +12,6 @@ router.get('/', requireAuth, async (req, res) => {
     const ownerId = req.user.role === 'owner'
       ? req.user.id
       : (req.user.owner_id || req.user.id);
-    console.log('[MT-GET] role:', req.user.role, '| id:', req.user.id, '| owner_id:', req.user.owner_id, '| using ownerId:', ownerId);
     const { pump_id, date, from_date, to_date, limit = 200 } = req.query;
     const params = [ownerId];
     let where = 'owner_id=$1';
@@ -38,7 +37,6 @@ router.post('/', requireAuth, async (req, res) => {
     const ownerId = req.user.role === 'owner'
       ? req.user.id
       : (req.user.owner_id || req.user.id);
-    console.log('[MT-POST] role:', req.user.role, '| id:', req.user.id, '| owner_id:', req.user.owner_id, '| using ownerId:', ownerId);
     const {
       id, pumpId, nozzleId, fuel, date, time, shift,
       operator, qty, meterBefore, meterAfter,
@@ -46,10 +44,10 @@ router.post('/', requireAuth, async (req, res) => {
     } = req.body;
     const r = await db.query(
       `INSERT INTO machine_tests
-        (id, owner_id, pump_id, nozzle_id, fuel, date, time, shift,
+        (id, owner_id, pump_id, nozzle_id, fuel, date, shift,
          operator_name, qty, meter_before, meter_after,
          jar_reading, variance, result, returned_to_tank, notes)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
        ON CONFLICT (id) DO UPDATE SET
          meter_before=EXCLUDED.meter_before, meter_after=EXCLUDED.meter_after,
          jar_reading=EXCLUDED.jar_reading, variance=EXCLUDED.variance,
@@ -57,7 +55,7 @@ router.post('/', requireAuth, async (req, res) => {
        RETURNING *`,
       [
         id || `MT-${Date.now()}`, ownerId, pumpId, nozzleId, fuel || 'Petrol',
-        date, time || null, shift || 'Morning',
+        date, shift || 'Morning',
         operator || '', parseFloat(qty) || 1,
         parseFloat(meterBefore) || 0, parseFloat(meterAfter) || 0,
         parseFloat(jarReading) || 0, variance ?? null,
