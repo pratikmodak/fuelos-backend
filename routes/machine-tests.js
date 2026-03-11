@@ -24,6 +24,7 @@ router.get('/', requireAuth, async (req, res) => {
       `SELECT * FROM machine_tests WHERE ${where} ORDER BY date DESC, created_at DESC LIMIT $${params.length}`,
       params
     );
+    console.log('[machine-tests GET] role:', req.user.role, 'ownerId:', ownerId, 'rows:', r.rows.length, 'sample owner_ids:', r.rows.slice(0,3).map(x=>x.owner_id));
     res.json(r.rows);
   } catch (e) {
     console.error('GET machine-tests:', e);
@@ -62,6 +63,7 @@ router.post('/', requireAuth, async (req, res) => {
         result || 'Pending', returnedToTank !== false, notes || ''
       ]
     );
+    console.log('[machine-tests POST] role:', req.user.role, 'ownerId:', ownerId, 'saved owner_id:', r.rows[0]?.owner_id);
     await logOp(req, 'machine_test_add', `Nozzle ${nozzleId} · ${result} · ${variance}ml`);
     res.json(r.rows[0]);
   } catch (e) {
