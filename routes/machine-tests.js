@@ -44,20 +44,23 @@ router.post('/', requireAuth, async (req, res) => {
     } = req.body;
     const r = await db.query(
       `INSERT INTO machine_tests
-        (id, owner_id, pump_id, nozzle_id, fuel, date, qty, jar_reading, result,
-         shift, operator_name, meter_before, meter_after, variance, returned_to_tank, notes)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+        (id, owner_id, pump_id, nozzle_id, fuel, date, result,
+         shift, operator, operator_name, meter_before, meter_after,
+         variance, returned_to_tank, notes, qty, jar_reading)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
        ON CONFLICT (id) DO UPDATE SET
-         jar_reading=EXCLUDED.jar_reading, result=EXCLUDED.result,
+         result=EXCLUDED.result,
          meter_before=EXCLUDED.meter_before, meter_after=EXCLUDED.meter_after,
-         variance=EXCLUDED.variance, notes=EXCLUDED.notes
+         variance=EXCLUDED.variance, notes=EXCLUDED.notes,
+         qty=EXCLUDED.qty, jar_reading=EXCLUDED.jar_reading
        RETURNING *`,
       [
-        id || `MT-${Date.now()}`, ownerId, pumpId, nozzleId, fuel || 'Petrol',
-        date, parseFloat(qty)||1, parseFloat(jarReading)||0, result||'Pending',
-        shift||'Morning', operator||'',
+        id || `MT-${Date.now()}`, ownerId, pumpId, nozzleId, fuel||'Petrol',
+        date, result||'Pending',
+        shift||'Morning', operator||'', operator||'',
         parseFloat(meterBefore)||0, parseFloat(meterAfter)||0,
-        variance??null, returnedToTank!==false, notes||''
+        variance??null, returnedToTank!==false, notes||'',
+        parseFloat(qty)||1, parseFloat(jarReading)||0
       ]
     );
     await logOp(req, 'machine_test_add', `Nozzle ${nozzleId} · ${result} · ${variance}ml`);
