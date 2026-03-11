@@ -3,22 +3,54 @@ const router = require('express').Router();
 const db     = require('../db');
 const { requireAuth } = require('../middleware/auth');
 
-// GET /api/fuel-prices — all rates + 30-day history
+// GET /api/fuel-prices — latest rates + history with optional date filter
+// Query params: from_date (YYYY-MM-DD), to_date (YYYY-MM-DD), days (default 15), pump_id
 router.get('/', requireAuth, async (req, res) => {
   try {
     const ownerId = req.user.owner_id || req.user.id;
-    const r = await db.query(
-      `SELECT fp.id, fp.owner_id, fp.pump_id, fp.petrol, fp.diesel, fp.cng,
-              fp.speed_petrol, fp.speed_diesel,
-              fp.effective_date, p.name as pump_name, p.short_name as pump_short_name
+    const { from_date, to_date, pump_id } = req.query;
+    const days = parseInt(req.query.days) || 15;
+
+    // Build date range
+    const toDate   = to_date   || new Date().toISOString().slice(0,10);
+    const fromDate = from_date || (() => {
+      const d = new Date(); d.setDate(d.getDate() - days); return d.toISOString().slice(0,10);
+    })();
+
+    // Latest per pump (always fetch — no date filter)
+    const latestR = await db.query(
+      `SELECT DISTINCT ON (fp.pump_id)
+              fp.id, fp.owner_id, fp.pump_id, fp.petrol, fp.diesel, fp.cng,
+              fp.speed_petrol, fp.speed_diesel, fp.effective_date,
+              p.name as pump_name, p.short_name as pump_short_name
        FROM fuel_prices fp
        JOIN pumps p ON p.id = fp.pump_id
        WHERE fp.owner_id=$1
-       ORDER BY fp.effective_date DESC, fp.pump_id
-       LIMIT 200`,
+       ORDER BY fp.pump_id, fp.effective_date DESC`,
       [ownerId]
     );
-    const all = r.rows.map(fp => ({
+
+    // History with date range + optional pump filter
+    const params = [ownerId, fromDate, toDate];
+    let pumpFilter = '';
+    if (pump_id) { params.push(pump_id); pumpFilter = `AND fp.pump_id=$${params.length}`; }
+
+    const histR = await db.query(
+      `SELECT fp.id, fp.owner_id, fp.pump_id, fp.petrol, fp.diesel, fp.cng,
+              fp.speed_petrol, fp.speed_diesel, fp.effective_date,
+              p.name as pump_name, p.short_name as pump_short_name
+       FROM fuel_prices fp
+       JOIN pumps p ON p.id = fp.pump_id
+       WHERE fp.owner_id=$1
+         AND fp.effective_date >= $2
+         AND fp.effective_date <= $3
+         ${pumpFilter}
+       ORDER BY fp.effective_date DESC, fp.pump_id
+       LIMIT 500`,
+      params
+    );
+
+    const mapRow = fp => ({
       id: fp.id, ownerId: String(fp.owner_id), owner_id: String(fp.owner_id),
       pumpId: fp.pump_id, pump_id: fp.pump_id,
       pumpName: fp.pump_short_name || fp.pump_name,
@@ -28,10 +60,13 @@ router.get('/', requireAuth, async (req, res) => {
       speed_petrol: parseFloat(fp.speed_petrol || 0),
       speed_diesel: parseFloat(fp.speed_diesel || 0),
       effectiveDate: fp.effective_date, effective_date: fp.effective_date, date: fp.effective_date,
-    }));
-    const latestMap = {};
-    all.forEach(fp => { if (!latestMap[fp.pump_id]) latestMap[fp.pump_id] = fp; });
-    res.json({ latest: Object.values(latestMap), history: all });
+    });
+
+    res.json({
+      latest:  latestR.rows.map(mapRow),
+      history: histR.rows.map(mapRow),
+      meta: { fromDate, toDate, days }
+    });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
