@@ -24,10 +24,6 @@ router.get('/', requireAuth, async (req, res) => {
       `SELECT * FROM machine_tests WHERE ${where} ORDER BY date DESC, created_at DESC LIMIT $${params.length}`,
       params
     );
-    // Debug: also log ALL rows in table regardless of owner
-    const allRows = await db.query('SELECT id, owner_id, pump_id, nozzle_id, date FROM machine_tests ORDER BY created_at DESC LIMIT 10');
-    console.log('[machine-tests GET] role:', req.user.role, 'querying ownerId:', ownerId, 'matched rows:', r.rows.length);
-    console.log('[machine-tests GET] ALL rows in table:', JSON.stringify(allRows.rows));
     res.json(r.rows);
   } catch (e) {
     console.error('GET machine-tests:', e);
@@ -66,7 +62,6 @@ router.post('/', requireAuth, async (req, res) => {
         result || 'Pending', returnedToTank !== false, notes || ''
       ]
     );
-    console.log('[machine-tests POST] role:', req.user.role, 'ownerId:', ownerId, 'saved owner_id:', r.rows[0]?.owner_id);
     await logOp(req, 'machine_test_add', `Nozzle ${nozzleId} · ${result} · ${variance}ml`);
     res.json(r.rows[0]);
   } catch (e) {
