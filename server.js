@@ -9,7 +9,7 @@ const cors    = require('cors');
 const http    = require('http');
 const db      = require('./db');
 const wsManager = require('./websocket');
-
+const machineTests = require('./routes/machine-tests');
 const app = express();
 app.set('trust proxy', true); // Required on Render to get real client IP from x-forwarded-for
 
@@ -89,7 +89,7 @@ app.use('/api/expenses',     require('./routes/expenses'));        // ← Expens
 app.use('/webhook/whatsapp',  require('./routes/whatsapp-webhook'));
 app.use('/api/whatsapp',      require('./routes/whatsapp-send'));
 app.get('/api/whatsapp/log',  require('./middleware/auth').requireAdmin, (req, res) => res.json([]));
-
+app.use('/api/machine-tests', machineTests);
 // ════════════════════════════════════════════════
 // ERROR HANDLER
 // ════════════════════════════════════════════════
