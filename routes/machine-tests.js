@@ -55,7 +55,7 @@ router.post('/', requireAuth, async (req, res) => {
          qty=EXCLUDED.qty, jar_reading=EXCLUDED.jar_reading
        RETURNING *`,
       [
-        id || `MT-${Date.now()}`, ownerId, pumpId, nozzleId, fuel||'Petrol',
+        (id && id.includes('-') && id.length > 20 ? id : require('crypto').randomUUID()), ownerId, pumpId, nozzleId, fuel||'Petrol',
         date, result||'Pending',
         shift||'Morning', operator||'', operator||'',
         parseFloat(meterBefore)||0, parseFloat(meterAfter)||0,
