@@ -125,4 +125,15 @@ router.get('/latest', async (req, res) => {
   }
 });
 
+
+// ── GET /api/veeder-root/debug  (temporary - remove after testing)
+router.get('/debug', async (req, res) => {
+  try {
+    const r = await db.query('SELECT * FROM tls4b_readings ORDER BY synced_at DESC LIMIT 20');
+    res.json({ count: r.rows.length, rows: r.rows });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 module.exports = router;
