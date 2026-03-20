@@ -5,7 +5,7 @@
 require('dotenv').config();
 // ── Add these 2 lines to your server.js ──
 
-import veederRootRoutes from "./veeder-root.js";
+const veederRoot = require('./veeder-root');
 const express = require('express');
 const cors    = require('cors');
 const http    = require('http');
@@ -45,7 +45,7 @@ app.use(cors({
 app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true }));
 // After your other route registrations:
-app.use("/api/veeder-root", veederRootRoutes);
+app.use('/api/veeder-root', veederRoot);
 // ── Request logging (brief)
 app.use((req, res, next) => {
   if (req.path !== '/api/health') {

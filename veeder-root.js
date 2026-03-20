@@ -1,131 +1,128 @@
-// ═══════════════════════════════════════════════════════════
-// FuelOS — Veeder-Root TLS-4B Backend Route
-// SECURITY:
-//   - Verifies HMAC signature on every push
-//   - Rejects replayed requests (timestamp check)
-//   - Rate limited to 1 push per minute per owner
-//   - Read-only dashboard endpoint (no write-back to device)
-// ═══════════════════════════════════════════════════════════
+// routes/veeder-root.js — Veeder-Root TLS-4B Integration
+const router = require('express').Router();
+const db     = require('../db');
+const crypto = require('crypto');
 
-import express from "express";
-import crypto  from "crypto";
-import { createClient } from "@supabase/supabase-js";
-
-const router = express.Router();
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_KEY
-);
-
-// ── Rate limit: track last push time per owner
+// Rate limit: max 1 push per minute per owner
 const lastPush = new Map();
-const RATE_LIMIT_MS = 60 * 1000; // max 1 push per minute
 
-// ── Verify HMAC signature from bridge script
+// Verify HMAC signature from bridge script
 function verifySignature(body, sig) {
   const secret = process.env.TLS4B_SECRET;
-  if (!secret) return true; // skip if not configured (dev mode)
-  const expected = crypto
-    .createHmac("sha256", secret)
-    .update(body)
-    .digest("hex");
-  return crypto.timingSafeEqual(
-    Buffer.from(sig  || "", "hex"),
-    Buffer.from(expected, "hex")
-  );
+  if (!secret) return true; // skip if not set (dev mode)
+  try {
+    const expected = crypto.createHmac('sha256', secret).update(body).digest('hex');
+    return crypto.timingSafeEqual(
+      Buffer.from(sig      || '', 'hex'),
+      Buffer.from(expected,       'hex')
+    );
+  } catch { return false; }
 }
 
-// ── POST /api/veeder-root/sync  (called by local bridge script)
-router.post("/sync", express.raw({ type: "application/json" }), async (req, res) => {
+// ── POST /api/veeder-root/sync
+// Called by local bridge script on Windows PC
+router.post('/sync', async (req, res) => {
   try {
-    const rawBody = req.body.toString();
-    const sig     = req.headers["x-tls4b-sig"] || "";
-    const ownerId = req.headers["x-tls4b-owner"] || "";
+    const rawBody = JSON.stringify(req.body);
+    const sig     = req.headers['x-tls4b-sig']   || '';
+    const ownerId = req.headers['x-tls4b-owner']  || req.body.owner_id || '';
 
-    // 1. Verify HMAC signature
+    // 1. Verify signature
     if (!verifySignature(rawBody, sig)) {
-      console.warn("[TLS4B] Invalid signature from", ownerId);
-      return res.status(401).json({ error: "Invalid signature" });
+      return res.status(401).json({ error: 'Invalid signature' });
     }
 
-    const { owner_id, pump_id, tanks, ts } = JSON.parse(rawBody);
+    const { owner_id, pump_id, tanks, ts } = req.body;
 
     if (!owner_id || !pump_id || !Array.isArray(tanks)) {
-      return res.status(400).json({ error: "Missing fields" });
+      return res.status(400).json({ error: 'Missing owner_id, pump_id or tanks' });
     }
 
-    // 2. Replay attack prevention — reject if timestamp > 2 min old
-    if (ts && Date.now() - ts > 2 * 60 * 1000) {
-      return res.status(400).json({ error: "Request too old (replay protection)" });
+    // 2. Replay protection — reject if timestamp > 2 min old
+    if (ts && Date.now() - Number(ts) > 2 * 60 * 1000) {
+      return res.status(400).json({ error: 'Request expired (replay protection)' });
     }
 
-    // 3. Rate limiting — max 1 push per minute per owner
+    // 3. Rate limit — max 1 push per minute per owner
     const lastTime = lastPush.get(owner_id) || 0;
-    if (Date.now() - lastTime < RATE_LIMIT_MS) {
-      return res.status(429).json({ error: "Rate limited — max 1 push/minute" });
+    if (Date.now() - lastTime < 60 * 1000) {
+      return res.status(429).json({ error: 'Rate limited — max 1 push/minute' });
     }
     lastPush.set(owner_id, Date.now());
 
-    // 4. Save readings
+    // 4. Upsert each tank reading
     const synced_at = new Date().toISOString();
-    const rows = tanks.map(t => ({
-      owner_id:  String(owner_id),
-      pump_id:   String(pump_id),
-      tank_no:   t.tank_no,
-      fuel:      t.fuel || "Petrol",
-      volume_l:  parseFloat(t.volume_l)  || 0,
-      height_mm: parseFloat(t.height_mm) || 0,
-      ullage_l:  parseFloat(t.ullage_l)  || 0,
-      temp_c:    parseFloat(t.temp_c)    || 0,
-      water_mm:  parseFloat(t.water_mm)  || 0,
-      alarm:     t.alarm || null,
-      synced_at,
-    }));
+    let synced = 0;
 
-    const { error } = await supabase
-      .from("tls4b_readings")
-      .upsert(rows, { onConflict: "owner_id,pump_id,tank_no" });
+    for (const t of tanks) {
+      await db.query(`
+        INSERT INTO tls4b_readings
+          (owner_id, pump_id, tank_no, fuel, volume_l, height_mm, ullage_l, temp_c, water_mm, alarm, synced_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+        ON CONFLICT (owner_id, pump_id, tank_no)
+        DO UPDATE SET
+          fuel       = EXCLUDED.fuel,
+          volume_l   = EXCLUDED.volume_l,
+          height_mm  = EXCLUDED.height_mm,
+          ullage_l   = EXCLUDED.ullage_l,
+          temp_c     = EXCLUDED.temp_c,
+          water_mm   = EXCLUDED.water_mm,
+          alarm      = EXCLUDED.alarm,
+          synced_at  = EXCLUDED.synced_at
+      `, [
+        String(owner_id), String(pump_id),
+        t.tank_no,
+        t.fuel      || 'Petrol',
+        parseFloat(t.volume_l)  || 0,
+        parseFloat(t.height_mm) || 0,
+        parseFloat(t.ullage_l)  || 0,
+        parseFloat(t.temp_c)    || 0,
+        parseFloat(t.water_mm)  || 0,
+        t.alarm || null,
+        synced_at,
+      ]);
+      synced++;
+    }
 
-    if (error) throw error;
-
-    console.log(`[TLS4B] ✓ ${owner_id} synced ${rows.length} tanks`);
-    res.json({ ok: true, synced: rows.length, synced_at });
+    console.log(`[TLS4B] ✓ ${owner_id} / ${pump_id} — ${synced} tanks synced`);
+    res.json({ ok: true, synced, synced_at });
 
   } catch (e) {
-    console.error("[TLS4B] sync error:", e.message);
+    console.error('[TLS4B] sync error:', e.message);
     res.status(500).json({ error: e.message });
   }
 });
 
-// ── GET /api/veeder-root/latest?owner_id=X&pump_id=Y  (dashboard read)
-router.get("/latest", async (req, res) => {
+// ── GET /api/veeder-root/latest?owner_id=X&pump_id=Y
+// Called by dashboard to show live tank levels
+router.get('/latest', async (req, res) => {
   try {
     const { owner_id, pump_id } = req.query;
-    if (!owner_id) return res.status(400).json({ error: "Missing owner_id" });
+    if (!owner_id) return res.status(400).json({ error: 'Missing owner_id' });
 
-    let q = supabase
-      .from("tls4b_readings")
-      .select("*")
-      .eq("owner_id", owner_id)
-      .order("synced_at", { ascending: false })
-      .limit(50);
+    let query, params;
+    if (pump_id) {
+      query  = 'SELECT * FROM tls4b_readings WHERE owner_id=$1 AND pump_id=$2 ORDER BY synced_at DESC LIMIT 50';
+      params = [owner_id, pump_id];
+    } else {
+      query  = 'SELECT * FROM tls4b_readings WHERE owner_id=$1 ORDER BY synced_at DESC LIMIT 100';
+      params = [owner_id];
+    }
 
-    if (pump_id) q = q.eq("pump_id", pump_id);
+    const r = await db.query(query, params);
 
-    const { data, error } = await q;
-    if (error) throw error;
-
-    // Latest reading per tank
+    // Return latest reading per tank
     const latest = {};
-    (data || []).forEach(row => {
-      const key = `${row.pump_id}_${row.tank_no}`;
+    (r.rows || []).forEach(row => {
+      const key = row.pump_id + '_' + row.tank_no;
       if (!latest[key]) latest[key] = row;
     });
 
     res.json({ tanks: Object.values(latest) });
   } catch (e) {
+    console.error('[TLS4B] latest error:', e.message);
     res.status(500).json({ error: e.message });
   }
 });
 
-export default router;
+module.exports = router;
