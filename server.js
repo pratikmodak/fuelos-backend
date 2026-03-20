@@ -3,15 +3,13 @@
 // Node.js / Express — Deploy on Render
 // ═══════════════════════════════════════════════════════════
 require('dotenv').config();
-// ── Add these 2 lines to your server.js ──
 
-const veederRoot = require('./veeder-root');
 const express = require('express');
 const cors    = require('cors');
 const http    = require('http');
 const db      = require('./db');
 const wsManager = require('./websocket');
-const machineTests = require('./routes/machine-tests');
+
 const app = express();
 app.set('trust proxy', true); // Required on Render to get real client IP from x-forwarded-for
 
@@ -22,7 +20,7 @@ const allowedOrigins = [
   'http://localhost:3000',
   'https://fuelos.vercel.app',
   'https://fuelos-v.vercel.app',
-  'https://fuelos.ligeratechnology.com',
+    'https://fuelos.ligeratechnology.com',
 ].filter(Boolean);
 
 app.use(cors({
@@ -44,8 +42,7 @@ app.use(cors({
 
 app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true }));
-// After your other route registrations:
-app.use('/api/veeder-root', veederRoot);
+
 // ── Request logging (brief)
 app.use((req, res, next) => {
   if (req.path !== '/api/health') {
@@ -89,10 +86,11 @@ app.use('/api/ai',           require('./routes/ai'));
 app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/device',       require('./routes/device'));          // ← Dispenser device integration
 app.use('/api/expenses',     require('./routes/expenses'));        // ← Expense tracking
+app.use('/api/veeder-root',   require('./routes/veeder-root'));     // ← TLS-4B tank sensor
 app.use('/webhook/whatsapp',  require('./routes/whatsapp-webhook'));
 app.use('/api/whatsapp',      require('./routes/whatsapp-send'));
 app.get('/api/whatsapp/log',  require('./middleware/auth').requireAdmin, (req, res) => res.json([]));
-app.use('/api/machine-tests', machineTests);
+
 // ════════════════════════════════════════════════
 // ERROR HANDLER
 // ════════════════════════════════════════════════
