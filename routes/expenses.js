@@ -137,6 +137,7 @@ router.post('/', async (req, res) => {
       date, category, subcategory = '', description, amount,
       payment_mode = 'Cash', vendor = '', reference = '',
       notes = '', pump_id,
+      fuel_type = '', qty_litres = null,
     } = req.body;
 
     if (!category || !description || !amount || !date)
@@ -152,12 +153,14 @@ router.post('/', async (req, res) => {
       INSERT INTO expenses
         (owner_id, pump_id, date, category, subcategory, description,
          amount, payment_mode, vendor, reference, notes,
+         fuel_type, qty_litres,
          added_by, added_by_role, status)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
       RETURNING *
     `, [
       owner_id, effectivePumpId, date, category, subcategory, description,
       parseFloat(amount), payment_mode, vendor, reference, notes,
+      fuel_type || '', qty_litres ? parseFloat(qty_litres) : null,
       name || 'Unknown', role, role === 'manager' ? 'pending' : 'approved',
     ]);
 
@@ -188,6 +191,7 @@ router.patch('/:id', async (req, res) => {
     const {
       date, category, subcategory, description, amount,
       payment_mode, vendor, reference, notes, status,
+      fuel_type, qty_litres,
     } = req.body;
 
     const fields = [];
@@ -198,6 +202,8 @@ router.patch('/:id', async (req, res) => {
     set('date',         date);
     set('category',     category);
     set('subcategory',  subcategory);
+    if (fuel_type   !== undefined) set('fuel_type',   fuel_type);
+    if (qty_litres  !== undefined) set('qty_litres',  qty_litres ? parseFloat(qty_litres) : null);
     set('description',  description);
     set('amount',       amount ? parseFloat(amount) : undefined);
     set('payment_mode', payment_mode);
