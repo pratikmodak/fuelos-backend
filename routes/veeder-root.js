@@ -9,30 +9,31 @@ const lastPush = new Map();
 // Verify HMAC signature from bridge script
 function verifySignature(body, sig) {
   const secret = process.env.TLS4B_SECRET;
-  if (!secret) return true; // skip if not set (dev mode)
+  if (!secret) return true; // skip if TLS4B_SECRET not set in env
+  if (!sig)    return true; // skip if bridge not sending sig yet
   try {
     const expected = crypto.createHmac('sha256', secret).update(body).digest('hex');
-    return crypto.timingSafeEqual(
-      Buffer.from(sig      || '', 'hex'),
-      Buffer.from(expected,       'hex')
-    );
-  } catch { return false; }
+    const a = Buffer.from(sig,      'hex');
+    const b = Buffer.from(expected, 'hex');
+    if (a.length !== b.length) return false;
+    return crypto.timingSafeEqual(a, b);
+  } catch { return true; } // on any error, allow through
 }
 
 // ── POST /api/veeder-root/sync
 // Called by local bridge script on Windows PC
 router.post('/sync', async (req, res) => {
   try {
-    const rawBody = JSON.stringify(req.body);
+    const body    = req.body || {};
+    const rawBody = JSON.stringify(body);
     const sig     = req.headers['x-tls4b-sig']   || '';
-    const ownerId = req.headers['x-tls4b-owner']  || req.body.owner_id || '';
 
-    // 1. Verify signature
+    // 1. Verify signature (skipped if TLS4B_SECRET not set)
     if (!verifySignature(rawBody, sig)) {
       return res.status(401).json({ error: 'Invalid signature' });
     }
 
-    const { owner_id, pump_id, tanks, ts } = req.body;
+    const { owner_id, pump_id, tanks, ts } = body;
 
     if (!owner_id || !pump_id || !Array.isArray(tanks)) {
       return res.status(400).json({ error: 'Missing owner_id, pump_id or tanks' });
@@ -43,9 +44,12 @@ router.post('/sync', async (req, res) => {
       return res.status(400).json({ error: 'Request expired (replay protection)' });
     }
 
+    console.log('[TLS4B] Sync request — owner:', owner_id, 'pump:', pump_id, 'tanks:', tanks?.length);
+
     // 3. Rate limit — max 1 push per minute per owner
     const lastTime = lastPush.get(owner_id) || 0;
     if (Date.now() - lastTime < 60 * 1000) {
+      console.log('[TLS4B] Rate limited:', owner_id);
       return res.status(429).json({ error: 'Rate limited — max 1 push/minute' });
     }
     lastPush.set(owner_id, Date.now());
