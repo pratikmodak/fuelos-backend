@@ -101,7 +101,7 @@ const sendText = async (toNumber, message) => {
       body: JSON.stringify({
         messaging_product: 'whatsapp',
         recipient_type: 'individual',
-        to_1,
+        to: to_1,
         type: 'text',
         text: { body: message, preview_url: false },
       }),
@@ -114,7 +114,7 @@ const sendText = async (toNumber, message) => {
       return { ok: false, error: `(#${errCode_1}) ${errMsg_1}${detail_1 ? ' — ' + detail_1 : ''}`, code: errCode_1 };
     }
     const mid_1 = data_1?.messages?.[0]?.id;
-    console.log(`[WhatsApp] ✓ Text sent to_1 ${to_1} — id: ${mid_1}`);
+    console.log(`[WhatsApp] ✓ Text sent to ${to_1} — id: ${mid_1}`);
     return { ok: true, messageId: mid_1 };
   } catch (e) {
     return { ok: false, error: e.message };
