@@ -51,17 +51,17 @@ router.get('/', requireAuth, async (req, res) => {
 // GET /api/shifts/readings
 router.get('/readings', requireAuth, async (req, res) => {
   try {
-    const ownerId = req.user.owner_id || req.user.id;
+    const ownerId_1 = req.user.owner_id || req.user.id;
     const { limit = 500, pump_id, from, to } = req.query;
     let q = 'SELECT * FROM nozzle_readings WHERE owner_id=$1';
-    const vals = [ownerId];
-    if (pump_id) { vals.push(pump_id); q += ` AND pump_id=$${vals.length}`; }
-    if (from)    { vals.push(from);    q += ` AND date >= $${vals.length}`; }
-    if (to)      { vals.push(to);      q += ` AND date <= $${vals.length}`; }
-    q += ` ORDER BY date DESC LIMIT $${vals.length + 1}`;
-    vals.push(parseInt(limit));
-    const r = await db.query(q, vals);
-    res.json(r.rows.map(nr => ({
+    const vals_1 = [ownerId_1];
+    if (pump_id) { vals_1.push(pump_id); q += ` AND pump_id=$${vals_1.length}`; }
+    if (from)    { vals_1.push(from);    q += ` AND date >= $${vals_1.length}`; }
+    if (to)      { vals_1.push(to);      q += ` AND date <= $${vals_1.length}`; }
+    q += ` ORDER BY date DESC LIMIT $${vals_1.length + 1}`;
+    vals_1.push(parseInt(limit));
+    const r_1 = await db.query(q, vals_1);
+    res.json(r_1.rows.map(nr => ({
       ...nr,
       pumpId:       nr.pump_id,
       nozzleId:     nr.nozzle_id,
@@ -82,7 +82,7 @@ const wa = require('../services/whatsapp');
 // POST /api/shifts — submit shift report
 router.post('/', requireAuth, async (req, res) => {
   try {
-    const ownerId = req.user.owner_id || req.user.id;
+    const ownerId_2 = req.user.owner_id || req.user.id;
     const s = req.body;
 
     // Calculate revenue per fuel type from nozzle readings
@@ -120,7 +120,7 @@ router.post('/', requireAuth, async (req, res) => {
              nozzle_readings=$8,
              shift_started_at=COALESCE(shift_reports.shift_started_at, EXCLUDED.shift_started_at)`,
           [
-            s.id, ownerId, pumpId, s.operatorId||s.operator_id||null,
+            s.id, ownerId_2, pumpId, s.operatorId||s.operator_id||null,
             s.operator, s.shift, s.date, JSON.stringify(s.nozzleReadings||s.nozzle_readings||[]),
             s.cash||0, s.upi||0, s.card||0, creditVal, totalRevenue,
             s.petrolVol||petrolVol||s.petrol_vol||0, s.dieselVol||dieselVol||s.diesel_vol||0, s.cngVol||cngVol||s.cng_vol||0,
@@ -137,7 +137,7 @@ router.post('/', requireAuth, async (req, res) => {
              ON CONFLICT (owner_id,pump_id,date) DO UPDATE SET
                petrol=sales.petrol+EXCLUDED.petrol, diesel=sales.diesel+EXCLUDED.diesel,
                cng=sales.cng+EXCLUDED.cng, total=sales.total+EXCLUDED.total`,
-            [ownerId, pumpId, s.date, petrolRev, dieselRev, cngRev, totalRevenue]
+            [ownerId_2, pumpId, s.date, petrolRev, dieselRev, cngRev, totalRevenue]
           ).catch(e => console.error('[sales upsert]', e.message)) : Promise.resolve(),
 
           // Nozzle readings + open reading updates
@@ -151,7 +151,7 @@ router.post('/', requireAuth, async (req, res) => {
                     open_reading,close_reading,volume,rate,revenue)
                  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
                  ON CONFLICT DO NOTHING`,
-                [s.id, pumpId, ownerId, nozzleId, nr.fuel, nr.operator||s.operator,
+                [s.id, pumpId, ownerId_2, nozzleId, nr.fuel, nr.operator||s.operator,
                  s.date, s.shift, nr.shiftIndex??nr.shift_index??0,
                  nr.openReading??nr.open_reading??0, closeVal??0,
                  nr.saleVol??nr.volume??0, nr.rate||0, nr.revenue||0]
@@ -179,12 +179,12 @@ router.post('/', requireAuth, async (req, res) => {
       try {
         // Get owner's WhatsApp number
         const ownerRow = await db.query(
-          'SELECT whatsapp_num, whatsapp, name FROM owners WHERE id=$1', [ownerId]
+          'SELECT whatsapp_num, whatsapp, name FROM owners WHERE id=$1', [ownerId_2]
         );
         const ownerPhone = ownerRow.rows[0]?.whatsapp_num;
-        console.log('[shifts/wa-notify] owner:', ownerId, 'phone:', ownerPhone||'(none)');
+        console.log('[shifts/wa-notify] owner:', ownerId_2, 'phone:', ownerPhone||'(none)');
         if (!ownerPhone) {
-          console.log('[shifts/wa-notify] No whatsapp_num for owner', ownerId, '— skipping');
+          console.log('[shifts/wa-notify] No whatsapp_num for owner', ownerId_2, '— skipping');
           return;
         }
 
@@ -198,7 +198,7 @@ router.post('/', requireAuth, async (req, res) => {
           const opRow = await db.query('SELECT lang_pref FROM operators WHERE id=$1', [s.operatorId||s.operator_id]);
           opLang = opRow.rows[0]?.lang_pref || 'en';
         }
-        await wa.notifyShiftSubmitted(ownerPhone, {
+        const waResult = await wa.notifyShiftSubmitted(ownerPhone, {
           operator:     s.operator,
           shift:        s.shift,
           pumpName,
@@ -208,9 +208,15 @@ router.post('/', requireAuth, async (req, res) => {
           upi:          s.upi||0,
           card:         s.card||0,
           petrolVol:    s.petrolVol||s.petrol_vol||0,
-          dieselVol:    s.dieselVol||s.diesel_vol||0,
+          dieselVol:    s.dieselVol||s.diesel_volt||0,
           lang:         opLang,
         });
+        if (waResult?.ok) {
+          console.log('[shifts/wa-notify] ✓ WA sent to', ownerPhone);
+        } else {
+          console.warn('[shifts/wa-notify] ✗ WA failed:', waResult?.error || 'unknown');
+          console.warn('[shifts/wa-notify] Config check — apiKey set:', !!(await wa.getWaConfig()).apiKey, '| phoneId set:', !!(await wa.getWaConfig()).phoneNumberId);
+        }
       } catch (e) {
         console.error('[shifts/wa-notify] ERROR:', e.message, e.stack?.split('\n')[1]);
       }
@@ -224,8 +230,8 @@ router.post('/', requireAuth, async (req, res) => {
 // DELETE /api/shifts/:id — undo shift
 router.delete('/:id', requireAuth, async (req, res) => {
   try {
-    const ownerId = req.user.owner_id || req.user.id;
-    await db.query('DELETE FROM shift_reports WHERE id=$1 AND owner_id=$2', [req.params.id, ownerId]);
+    const ownerId_3 = req.user.owner_id || req.user.id;
+    await db.query('DELETE FROM shift_reports WHERE id=$1 AND owner_id=$2', [req.params.id, ownerId_3]);
     await db.query('DELETE FROM nozzle_readings WHERE shift_id=$1', [req.params.id]);
     await logOp(req, { category:'shift', action:'Shift deleted', entityType:'shift_report', entityId:req.params.id });
     res.json({ ok: true });
@@ -235,7 +241,7 @@ router.delete('/:id', requireAuth, async (req, res) => {
 // PATCH /api/shifts/:id/confirm
 router.patch('/:id/confirm', requireAuth, async (req, res) => {
   try {
-    const ownerId = req.user.owner_id || req.user.id;
+    const ownerId_4 = req.user.owner_id || req.user.id;
     const { note, cash_received, card_received, upi_received, confirmed_by } = req.body;
     await db.query(
       `UPDATE shift_reports
@@ -244,7 +250,7 @@ router.patch('/:id/confirm', requireAuth, async (req, res) => {
            confirmed_by=$5, confirmed_at=NOW()
        WHERE id=$6 AND owner_id=$7`,
       [note||'', parseFloat(cash_received)||0, parseFloat(card_received)||0,
-       parseFloat(upi_received)||0, confirmed_by||'', req.params.id, ownerId]
+       parseFloat(upi_received)||0, confirmed_by||'', req.params.id, ownerId_4]
     );
     res.json({ ok: true });
 
@@ -261,15 +267,15 @@ router.patch('/:id/confirm', requireAuth, async (req, res) => {
            LEFT JOIN operators op ON op.id = sr.operator_id
            WHERE sr.id = $1`, [req.params.id]
         );
-        const s = shiftRow.rows[0];
-        if (!s?.whatsapp_num) return;
-        await wa.notifyShiftConfirmed(s.whatsapp_num, {
-          pumpName:    s.pump_name,
-          operator:    s.operator,
-          shift:       s.shift,
+        const s_1 = shiftRow.rows[0];
+        if (!s_1?.whatsapp_num) return;
+        await wa.notifyShiftConfirmed(s_1.whatsapp_num, {
+          pumpName:    s_1.pump_name,
+          operator:    s_1.operator,
+          shift:       s_1.shift,
           confirmedBy: req.body.confirmed_by || 'Manager',
-          amount:      s.total_revenue,
-          lang:        s.op_lang || 'en',
+          amount:      s_1.total_revenue,
+          lang:        s_1.op_lang || 'en',
         });
       } catch (e) { console.warn('[shifts/confirm/wa]', e.message); }
     });
@@ -286,18 +292,18 @@ router.post('/assign-nozzles', requireAuth, async (req, res) => {
     const { operator_id, pump_id, date, shift, nozzle_ids } = req.body;
     if (!operator_id || !pump_id || !date || !shift)
       return res.status(400).json({ error: 'operator_id, pump_id, date, shift required' });
-    const ownerId = req.user.owner_id || req.user.id;
+    const ownerId_5 = req.user.owner_id || req.user.id;
     const nozzleStr = Array.isArray(nozzle_ids) ? nozzle_ids.join(',') : (nozzle_ids || '');
-    const r = await db.query(
+    const r_2 = await db.query(
       `INSERT INTO daily_nozzle_assignments
          (owner_id, pump_id, operator_id, date, shift, nozzle_ids, assigned_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7)
        ON CONFLICT (pump_id, operator_id, date, shift)
        DO UPDATE SET nozzle_ids=$6, assigned_by=$7, updated_at=NOW()
        RETURNING *`,
-      [ownerId, pump_id, operator_id, date, shift, nozzleStr, req.user.email]
+      [ownerId_5, pump_id, operator_id, date, shift, nozzleStr, req.user.email]
     );
-    res.json({ ok: true, assignment: r.rows[0] });
+    res.json({ ok: true, assignment: r_2.rows[0] });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -305,16 +311,16 @@ router.post('/assign-nozzles', requireAuth, async (req, res) => {
 router.get('/assignments', requireAuth, async (req, res) => {
   try {
     const { pump_id, date } = req.query;
-    const ownerId = req.user.owner_id || req.user.id;
+    const ownerId_6 = req.user.owner_id || req.user.id;
     const where = ['owner_id=$1'];
-    const vals  = [ownerId];
-    if (pump_id) { vals.push(pump_id);  where.push(`pump_id=$${vals.length}`); }
-    if (date)    { vals.push(date);     where.push(`date=$${vals.length}`); }
-    const r = await db.query(
+    const vals_2  = [ownerId_6];
+    if (pump_id) { vals_2.push(pump_id);  where.push(`pump_id=$${vals_2.length}`); }
+    if (date)    { vals_2.push(date);     where.push(`date=$${vals_2.length}`); }
+    const r_3 = await db.query(
       `SELECT * FROM daily_nozzle_assignments WHERE ${where.join(' AND ')} ORDER BY date DESC, shift`,
-      vals
+      vals_2
     );
-    res.json(r.rows);
+    res.json(r_3.rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -325,19 +331,19 @@ router.get('/my-nozzles', requireAuth, async (req, res) => {
     const operatorId = req.user.id;
     const today = date || new Date().toISOString().split('T')[0];
     // Get ALL shifts for today so operator can see across shifts
-    const r = await db.query(
+    const r_4 = await db.query(
       `SELECT * FROM daily_nozzle_assignments
        WHERE operator_id=$1 AND date=$2
        ORDER BY shift`,
       [operatorId, today]
     );
-    if (r.rows.length === 0) return res.json({ nozzle_ids: [], assignments: [] });
+    if (r_4.rows.length === 0) return res.json({ nozzle_ids: [], assignments: [] });
     // If shift specified, filter; else merge all
-    const relevant = shift ? r.rows.filter(a => a.shift === shift) : r.rows;
+    const relevant = shift ? r_4.rows.filter(a => a.shift === shift) : r_4.rows;
     const allNozzleIds = [...new Set(
       relevant.flatMap(a => a.nozzle_ids ? a.nozzle_ids.split(',').filter(Boolean) : [])
     )];
-    res.json({ nozzle_ids: allNozzleIds, assignments: r.rows });
+    res.json({ nozzle_ids: allNozzleIds, assignments: r_4.rows });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -365,7 +371,7 @@ const ensureAttendanceTable = async () => {
 router.post('/attendance', requireAuth, async (req, res) => {
   try {
     await ensureAttendanceTable();
-    const ownerId = req.user.owner_id || req.user.id;
+    const ownerId_7 = req.user.owner_id || req.user.id;
     const { records } = req.body;
     // records = [{ operator_id, pump_id, date, shift, status, note }]
     if (!Array.isArray(records) || records.length === 0)
@@ -376,7 +382,7 @@ router.post('/attendance', requireAuth, async (req, res) => {
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
          ON CONFLICT (operator_id,date,shift)
          DO UPDATE SET status=$6, note=$7, marked_by=$8, updated_at=NOW()`,
-        [ownerId, rec.pump_id, rec.operator_id, rec.date, rec.shift||'All',
+        [ownerId_7, rec.pump_id, rec.operator_id, rec.date, rec.shift||'All',
          rec.status||'present', rec.note||null, req.user.email||req.user.name||null]
       );
     }
@@ -389,19 +395,19 @@ router.post('/attendance', requireAuth, async (req, res) => {
 router.get('/attendance', requireAuth, async (req, res) => {
   try {
     await ensureAttendanceTable();
-    const ownerId = req.user.owner_id || req.user.id;
+    const ownerId_8 = req.user.owner_id || req.user.id;
     const { pump_id, date, month } = req.query;
-    const where = ['owner_id=$1'];
-    const vals  = [ownerId];
-    if (pump_id) { vals.push(pump_id); where.push(`pump_id=$${vals.length}`); }
-    if (date)    { vals.push(date);    where.push(`date=$${vals.length}`); }
-    if (month)   { vals.push(month + '-01'); vals.push(month + '-31');
-                   where.push(`date >= $${vals.length-1} AND date <= $${vals.length}`); }
-    const r = await db.query(
-      `SELECT * FROM daily_attendance WHERE ${where.join(' AND ')} ORDER BY date DESC, operator_id`,
-      vals
+    const where_1 = ['owner_id=$1'];
+    const vals_3  = [ownerId_8];
+    if (pump_id) { vals_3.push(pump_id); where_1.push(`pump_id=$${vals_3.length}`); }
+    if (date)    { vals_3.push(date);    where_1.push(`date=$${vals_3.length}`); }
+    if (month)   { vals_3.push(month + '-01'); vals_3.push(month + '-31');
+                   where_1.push(`date >= $${vals_3.length-1} AND date <= $${vals_3.length}`); }
+    const r_5 = await db.query(
+      `SELECT * FROM daily_attendance WHERE ${where_1.join(' AND ')} ORDER BY date DESC, operator_id`,
+      vals_3
     );
-    res.json(r.rows.map(a => ({
+    res.json(r_5.rows.map(a => ({
       id: a.id, operatorId: String(a.operator_id), pumpId: String(a.pump_id),
       date: String(a.date).slice(0,10), shift: a.shift, status: a.status,
       note: a.note, markedBy: a.marked_by, createdAt: a.created_at,
@@ -414,7 +420,7 @@ router.get('/attendance', requireAuth, async (req, res) => {
 // Rich report joining shift_reports + nozzle assignments
 router.get('/attendance-report', requireAuth, async (req, res) => {
   try {
-    const ownerId = req.user.owner_id || req.user.id;
+    const ownerId_9 = req.user.owner_id || req.user.id;
     const { pump_id, month } = req.query;
     if (!month) return res.status(400).json({ error: 'month required (YYYY-MM)' });
 
@@ -423,14 +429,14 @@ router.get('/attendance-report', requireAuth, async (req, res) => {
     const [yr, mo] = month.split('-').map(Number);
     const monthEnd = new Date(yr, mo, 0).toISOString().slice(0,10);
 
-    const where = ['sr.owner_id=$1', 'sr.date >= $2', 'sr.date <= $3'];
-    const vals  = [ownerId, monthStart, monthEnd];
-    if (pump_id) { vals.push(pump_id); where.push(`sr.pump_id=$${vals.length}`); }
+    const where_2 = ['sr.owner_id=$1', 'sr.date >= $2', 'sr.date <= $3'];
+    const vals_4  = [ownerId_9, monthStart, monthEnd];
+    if (pump_id) { vals_4.push(pump_id); where_2.push(`sr.pump_id=$${vals_4.length}`); }
 
     // Shift start times (India standard pump shifts)
     const shiftStart = { Morning: '06:00', Afternoon: '14:00', Night: '22:00' };
 
-    const r = await db.query(`
+    const r_6 = await db.query(`
       SELECT sr.*,
              dna.nozzle_ids AS assigned_nozzles,
              MIN(nr.created_at) AS first_reading_at
@@ -442,12 +448,12 @@ router.get('/attendance-report', requireAuth, async (req, res) => {
             AND dna.pump_id           = sr.pump_id
       LEFT JOIN nozzle_readings nr
              ON nr.shift_id = sr.id
-      WHERE  ${where.join(' AND ')}
+      WHERE  ${where_2.join(' AND ')}
       GROUP BY sr.id, dna.nozzle_ids
       ORDER  BY sr.date DESC, sr.operator
-    `, vals);
+    `, vals_4);
 
-    const rows = r.rows.map(s => {
+    const rows = r_6.rows.map(s => {
       // Nozzle IDs from assignment OR from nozzle_readings JSONB
       let nozzles = [];
       if (s.assigned_nozzles) {
@@ -456,7 +462,7 @@ router.get('/attendance-report', requireAuth, async (req, res) => {
         try {
           const readings = typeof s.nozzle_readings === 'string'
             ? JSON.parse(s.nozzle_readings) : (s.nozzle_readings || []);
-          nozzles = [...new Set(readings.map(r => r.nozzleId || r.nozzle_id).filter(Boolean))];
+          nozzles = [...new Set(readings.map(r_6 => r_6.nozzleId || r_6.nozzle_id).filter(Boolean))];
         } catch {}
       }
 
