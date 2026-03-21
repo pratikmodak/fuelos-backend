@@ -33,10 +33,13 @@ router.patch('/me', requireOwner, async (req, res) => {
     const sets = [], vals = [];
     allowed.forEach(k => {
       if (req.body[k] !== undefined) {
-        // JSONB columns must be passed as JSON string — pg driver can't auto-cast arrays/objects
-        const v = JSONB_FIELDS.has(k) ? JSON.stringify(req.body[k]) : req.body[k];
-        vals.push(v);
-        sets.push(`${k}=$${vals.length}::jsonb`);
+        if (JSONB_FIELDS.has(k)) {
+          vals.push(JSON.stringify(req.body[k]));
+          sets.push(`${k}=$${vals.length}::jsonb`);
+        } else {
+          vals.push(req.body[k]);
+          sets.push(`${k}=$${vals.length}`);
+        }
       }
     });
     if (!sets.length) return res.json({ ok: true });
@@ -66,7 +69,7 @@ router.get('/staff', requireAuth, async (req, res) => {
 router.post('/staff', requireOwner, async (req, res) => {
   try {
     const { role, name, email, phone, password, shift, pump_id, pumpId, nozzles, salary, status } = req.body;
-    const ownerId = req.user.owner_id || req.user.id;
+    const ownerId_1 = req.user.owner_id || req.user.id;
     const resolvedPumpId = pump_id || pumpId || null;
 
     if (!role) return res.status(400).json({ error: 'role required (manager or operator)' });
@@ -75,24 +78,24 @@ router.post('/staff', requireOwner, async (req, res) => {
     const hash = await bcrypt.hash(password || 'fuelos123', 10);
 
     if (role === 'manager') {
-      const r = await db.query(
+      const r_1 = await db.query(
         `INSERT INTO managers (owner_id,email,name,phone,password,shift,pump_id,salary,status)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
-        [ownerId, email, name, phone||null, hash, shift||'Morning', resolvedPumpId, salary||0, status||'Active']
+        [ownerId_1, email, name, phone||null, hash, shift||'Morning', resolvedPumpId, salary||0, status||'Active']
       );
-      const m = r.rows[0];
-      return res.json({ ...m, id: String(m.id), ownerId: String(m.owner_id), pumpId: m.pump_id });
+      const m = r_1.rows[0];
+      return res.json({ ...m, id: String(m.id), ownerId_1: String(m.owner_id), pumpId: m.pump_id });
     }
 
     if (role === 'operator') {
       const nozzleStr = Array.isArray(nozzles) ? nozzles.join(',') : (nozzles || '');
-      const r = await db.query(
+      const r_2 = await db.query(
         `INSERT INTO operators (owner_id,email,name,phone,password,shift,pump_id,nozzles,salary,status)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
-        [ownerId, email, name, phone||null, hash, shift||'Morning', resolvedPumpId, nozzleStr, salary||0, status||'Active']
+        [ownerId_1, email, name, phone||null, hash, shift||'Morning', resolvedPumpId, nozzleStr, salary||0, status||'Active']
       );
-      const o = r.rows[0];
-      return res.json({ ...o, id: String(o.id), ownerId: String(o.owner_id), pumpId: o.pump_id });
+      const o_1 = r_2.rows[0];
+      return res.json({ ...o, id: String(o_1.id), ownerId_1: String(o_1.owner_id), pumpId: o_1.pump_id });
     }
 
     res.status(400).json({ error: 'Invalid role. Use manager or operator' });
@@ -107,14 +110,14 @@ router.post('/staff', requireOwner, async (req, res) => {
 router.post('/managers', requireOwner, async (req, res) => {
   try {
     const { name, email, phone, password, shift, pump_id, salary } = req.body;
-    const hash = await bcrypt.hash(password || 'fuelos123', 10);
-    const r = await db.query(
+    const hash_1 = await bcrypt.hash(password || 'fuelos123', 10);
+    const r_3 = await db.query(
       `INSERT INTO managers (owner_id,email,name,phone,password,shift,pump_id,salary)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
-      [req.user.owner_id, email, name, phone, hash, shift, pump_id, salary || 0]
+      [req.user.owner_id, email, name, phone, hash_1, shift, pump_id, salary || 0]
     );
-    const m = r.rows[0];
-    res.json({ ...m, id: String(m.id) });
+    const m_1 = r_3.rows[0];
+    res.json({ ...m, id: String(m_1.id) });
   } catch (e) {
     if (e.code === '23505') return res.status(409).json({ error: 'Email already exists' });
     res.status(500).json({ error: e.message });
@@ -125,14 +128,14 @@ router.post('/managers', requireOwner, async (req, res) => {
 router.post('/operators', requireOwner, async (req, res) => {
   try {
     const { name, email, phone, password, shift, pump_id, nozzles, salary } = req.body;
-    const hash = await bcrypt.hash(password || 'fuelos123', 10);
-    const r = await db.query(
+    const hash_2 = await bcrypt.hash(password || 'fuelos123', 10);
+    const r_4 = await db.query(
       `INSERT INTO operators (owner_id,email,name,phone,password,shift,pump_id,nozzles,salary)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
-      [req.user.owner_id, email, name, phone, hash, shift, pump_id, nozzles, salary || 0]
+      [req.user.owner_id, email, name, phone, hash_2, shift, pump_id, nozzles, salary || 0]
     );
-    const o = r.rows[0];
-    res.json({ ...o, id: String(o.id) });
+    const o_2 = r_4.rows[0];
+    res.json({ ...o, id: String(o_2.id) });
   } catch (e) {
     if (e.code === '23505') return res.status(409).json({ error: 'Email already exists' });
     res.status(500).json({ error: e.message });
@@ -156,9 +159,9 @@ router.patch('/operators/:id', requireOwner, async (req, res) => {
 // DELETE /api/owners/operators/:id
 router.delete('/operators/:id', requireOwner, async (req, res) => {
   try {
-    const ownerId = req.user.owner_id || req.user.id;
-    const r = await db.query('DELETE FROM operators WHERE id=$1 AND owner_id=$2 RETURNING id', [req.params.id, ownerId]);
-    if (!r.rows.length) return res.status(404).json({ error: 'Operator not found or not yours' });
+    const ownerId_2 = req.user.owner_id || req.user.id;
+    const r_5 = await db.query('DELETE FROM operators WHERE id=$1 AND owner_id=$2 RETURNING id', [req.params.id, ownerId_2]);
+    if (!r_5.rows.length) return res.status(404).json({ error: 'Operator not found or not yours' });
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -166,9 +169,9 @@ router.delete('/operators/:id', requireOwner, async (req, res) => {
 // DELETE /api/owners/managers/:id
 router.delete('/managers/:id', requireOwner, async (req, res) => {
   try {
-    const ownerId = req.user.owner_id || req.user.id;
-    const r = await db.query('DELETE FROM managers WHERE id=$1 AND owner_id=$2 RETURNING id', [req.params.id, ownerId]);
-    if (!r.rows.length) return res.status(404).json({ error: 'Manager not found or not yours' });
+    const ownerId_3 = req.user.owner_id || req.user.id;
+    const r_6 = await db.query('DELETE FROM managers WHERE id=$1 AND owner_id=$2 RETURNING id', [req.params.id, ownerId_3]);
+    if (!r_6.rows.length) return res.status(404).json({ error: 'Manager not found or not yours' });
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -198,22 +201,22 @@ router.patch('/staff/:role/:id/lang', requireAuthOrAdmin, async (req, res) => {
     const table = role === 'manager' ? 'managers' : 'operators';
     // Owner: filter by their owner_id. Admin/SuperAdmin: update any staff member
     const isAdmin = ['superadmin','admin','monitor','caller'].includes(req.user.role);
-    let r;
+    let r_6;
     if (isAdmin) {
-      r = await db.query(
+      r_6 = await db.query(
         `UPDATE ${table} SET lang_pref=$1 WHERE id=$2 RETURNING id, name, lang_pref`,
         [lang, id]
       );
     } else {
-      const ownerId = req.user.id;
-      r = await db.query(
+      const ownerId_4 = req.user.id;
+      r_6 = await db.query(
         `UPDATE ${table} SET lang_pref=$1 WHERE id=$2 AND owner_id=$3 RETURNING id, name, lang_pref`,
-        [lang, id, ownerId]
+        [lang, id, ownerId_4]
       );
     }
-    if (!r.rows.length) return res.status(404).json({ error: 'Staff not found' });
-    await logOp(req, { category:'staff', action:`Language set to ${lang} for ${role}`, entityType:table, entityId:id, details:{ lang, name: r.rows[0].name } });
-    res.json({ ok: true, lang, name: r.rows[0].name });
+    if (!r_6.rows.length) return res.status(404).json({ error: 'Staff not found' });
+    await logOp(req, { category:'staff', action:`Language set to ${lang} for ${role}`, entityType:table, entityId:id, details:{ lang, name: r_6.rows[0].name } });
+    res.json({ ok: true, lang, name: r_6.rows[0].name });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -255,17 +258,17 @@ const ensureCreditTxnTable = async () => {
 // GET /api/owners/credit-customers
 router.get('/credit-customers', requireOwnerOrManager, async (req, res) => {
   try {
-    const ownerId = req.user.owner_id || req.user.id;
+    const ownerId_5 = req.user.owner_id || req.user.id;
     // Managers only see their own pump's customers; owners see all
     const pumpId = req.user.role === 'manager' ? req.user.pump_id : null;
-    const r = await db.query(
+    const r_7 = await db.query(
       pumpId
         ? `SELECT * FROM credit_customers WHERE owner_id=$1 AND (pump_id=$2 OR pump_id IS NULL OR pump_id='') ORDER BY name`
         : `SELECT * FROM credit_customers WHERE owner_id=$1 ORDER BY name`,
-      pumpId ? [ownerId, pumpId] : [ownerId]
+      pumpId ? [ownerId_5, pumpId] : [ownerId_5]
     );
-    res.json(r.rows.map(c => ({
-      id: c.id, ownerId: c.owner_id, pumpId: String(c.pump_id||''),
+    res.json(r_7.rows.map(c => ({
+      id: c.id, ownerId_5: c.owner_id, pumpId: String(c.pump_id||''),
       name: c.name, phone: c.phone||'', limit: parseFloat(c.credit_limit||0),
       outstanding: parseFloat(c.outstanding||0), lastTxn: c.last_txn, status: c.status,
     })));
@@ -275,7 +278,7 @@ router.get('/credit-customers', requireOwnerOrManager, async (req, res) => {
 // POST /api/owners/credit-customers
 router.post('/credit-customers', requireOwnerOrManager, async (req, res) => {
   try {
-    const ownerId = req.user.owner_id || req.user.id;
+    const ownerId_6 = req.user.owner_id || req.user.id;
     const { id, name, phone, pumpId, limit } = req.body;
     // Managers add in Pending state — owner must approve before credit can be used
     const initialStatus = req.user.role === 'manager' ? 'Pending' : 'Active';
@@ -284,7 +287,7 @@ router.post('/credit-customers', requireOwnerOrManager, async (req, res) => {
        VALUES ($1,$2,$3,$4,$5,$6,0,CURRENT_DATE,$7)
        ON CONFLICT (id) DO NOTHING
        RETURNING *`,
-      [id, ownerId, pumpId||null, name, phone||null, limit||0, initialStatus]
+      [id, ownerId_6, pumpId||null, name, phone||null, limit||0, initialStatus]
     );
     res.json({ ok: true, status: initialStatus, pending: initialStatus === 'Pending' });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -293,13 +296,13 @@ router.post('/credit-customers', requireOwnerOrManager, async (req, res) => {
 // PATCH /api/owners/credit-customers/:id/status  (owner only — approve or reject)
 router.patch('/credit-customers/:id/status', requireOwner, async (req, res) => {
   try {
-    const ownerId = req.user.id;
+    const ownerId_7 = req.user.id;
     const { status } = req.body; // 'Active' or 'Rejected'
     if (!['Active', 'Rejected', 'Inactive'].includes(status))
       return res.status(400).json({ error: 'Invalid status' });
     const { rowCount } = await db.query(
       `UPDATE credit_customers SET status=$1, updated_at=NOW() WHERE id=$2 AND owner_id=$3`,
-      [status, req.params.id, ownerId]
+      [status, req.params.id, ownerId_7]
     );
     if (!rowCount) return res.status(404).json({ error: 'Customer not found' });
     res.json({ ok: true, status });
@@ -310,11 +313,11 @@ router.patch('/credit-customers/:id/status', requireOwner, async (req, res) => {
 router.get('/credit-customers/:id/transactions', requireOwnerOrManager, async (req, res) => {
   try {
     await ensureCreditTxnTable();
-    const r = await db.query(
+    const r_8 = await db.query(
       `SELECT * FROM credit_transactions WHERE customer_id=$1 ORDER BY date DESC, created_at DESC LIMIT 100`,
       [req.params.id]
     );
-    res.json(r.rows.map(t => ({
+    res.json(r_8.rows.map(t => ({
       id: t.id, date: String(t.date||'').slice(0,10), fuel: t.fuel,
       qty: parseFloat(t.qty||0), rate: parseFloat(t.rate||0),
       amount: parseFloat(t.amount||0), type: t.type, note: t.note,
@@ -334,7 +337,7 @@ router.post('/credit-customers/:id/purchase', requireOwnerOrManager, async (req,
     if (!cust.length) return res.status(404).json({ error: 'Customer not found' });
     if (cust[0].status !== 'Active')
       return res.status(403).json({ error: 'Credit blocked — status: ' + cust[0].status + '. Owner must approve first.' });
-    const ownerId = cust[0].owner_id;
+    const ownerId_8 = cust[0].owner_id;
     const { id: txnId, date, fuel, qty, rate, amount, note } = req.body;
     // Credit limit check — managers cannot exceed limit; owners can override
     const creditLimit = parseFloat(cust[0].credit_limit || 0);
@@ -348,7 +351,7 @@ router.post('/credit-customers/:id/purchase', requireOwnerOrManager, async (req,
     await db.query(
       `INSERT INTO credit_transactions (id,owner_id,customer_id,date,fuel,qty,rate,amount,type,note)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'purchase',$9)`,
-      [txnId, ownerId, req.params.id, txnDate, fuel, qty||0, rate||0, parseFloat(amount), note||null]
+      [txnId, ownerId_8, req.params.id, txnDate, fuel, qty||0, rate||0, parseFloat(amount), note||null]
     );
     await db.query(
       `UPDATE credit_customers SET outstanding=outstanding+$1::numeric, last_txn=$2, updated_at=NOW() WHERE id=$3`,
@@ -369,7 +372,7 @@ router.post('/credit-customers/:id/collect', requireOwnerOrManager, async (req, 
       [req.params.id]
     );
     if (!cust.length) return res.status(404).json({ error: 'Customer not found' });
-    const ownerId = cust[0].owner_id;
+    const ownerId_9 = cust[0].owner_id;
     const { id: txnId, amount, note } = req.body;
     const collectAmt = parseFloat(amount || 0);
     const currentOutstanding = parseFloat(cust[0].outstanding || 0);
@@ -380,7 +383,7 @@ router.post('/credit-customers/:id/collect', requireOwnerOrManager, async (req, 
     await db.query(
       `INSERT INTO credit_transactions (id,owner_id,customer_id,date,amount,type,note)
        VALUES ($1,$2,$3,CURRENT_DATE,$4,'payment',$5)`,
-      [txnId, ownerId, req.params.id, collectAmt, note||null]
+      [txnId, ownerId_9, req.params.id, collectAmt, note||null]
     );
     await db.query(
       `UPDATE credit_customers SET outstanding=outstanding-$1::numeric, last_txn=CURRENT_DATE, updated_at=NOW() WHERE id=$2`,
